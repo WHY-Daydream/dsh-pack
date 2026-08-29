@@ -5,10 +5,94 @@
 
 ## [Unreleased]
 
-- **v0.4.1 规划**：OCI push/pull（`.dshpack` → OCI blob + DSH manifest → registry，
-  digest-first 拉取 D28）；trust.yaml 细粒度策略；image lock（tag → digest 固定）。
+- **v0.4.2 规划**：trust.yaml 细粒度策略；image lock（tag → digest 固定）；
+  registry 引用计数 / GC；GHCR 真实凭据验证（CI/手动）。
 - **v0.5 规划**：Encryption（私密插件源码 / 企业离线分发场景才需要）。
   Signing 已知边界（吊销 / 轮换 / 多签名 / 过期）同列后续。
+
+## [v0.4.1] - 2026-08-29
+
+### Remote Distribution（OCI push/pull，D32–D40 冻结）
+
+定位演进：v0.4.0 回答"Agent Image 是什么、怎么在本地运行"；v0.4.1 回答
+"Agent Image 怎么跨机器分发"。只实现 OCI Distribution Spec 最小子集
+（D40），复用 GHCR/Harbor/Docker Registry/ECR 现有 API，**不自建 DSH
+Registry Server**。
+
+### Added
+
+- **三种 Digest 分离**（D32/D33）：`contentHash`（DSH 语义身份，Signing/
+  Trust 锚点不变）/ OCI `blobDigest`（SHA256 over raw archive bytes）/
+  OCI `manifestDigest`（SHA256 over manifest JSON）；类型层面三个独立
+  alias 强制区分，杜绝 `verifyContentHash(manifestDigest)` 类 bug。
+- **OCI 顶层标准 Envelope**（D34–D37）：`application/vnd.oci.image.
+  manifest.v1+json` + `artifactType=vnd.dsh.agent.image.v1`；DSH Image
+  Manifest 作为 **config blob**，`.dshpack` 作为**单 layer**——不在 Registry
+  顶层发布自定义 manifest media type（旧 Registry 兼容性）。
+- **`src/image/registry/`**：reference（local/remote 区分 + 端点）、
+  descriptor（digest/size 按实际字节重算）、manifest（envelope
+  build/parse）、auth（anonymous / username+token / Bearer challenge，
+  凭据来自 env 或 `~/.dsh/registry-auth.json`，**永不入包**）、client
+  （HTTP 原语 + Docker-Content-Digest 校验）、push（§4）、pull（§5）。
+- **`/pack push <localRef> <remoteRef>`**：resolve → verifyPack 自证 →
+  blob/config 上传 → PUT manifest。
+- **`/pack pull <remoteRef>`**（digest-first，D38/D39）：OCI Transport →
+  DSH Artifact（contentHash == config）→ Signature → Trust → LocalStore。
+- **`/pack run <remoteRef>`**：本地无则先拉（cache-only 策略），trust 强制
+  仍在 boot 前（D29 延续）。
+- **恶意 Registry 边界**：registry 返回的 annotations/metadata 全部忽略，
+  信任只来自包内 v0.3 验签（VALID ≠ TRUSTED 不变）。
+
+### 工程笔记
+
+- **local-store putManifest 幂等 bug（真 bug）**：写入带 `\n` 尾缀、幂等
+  比较却不带 → 同 digest 二次 import 必抛 "already exists with different
+  content"。被 criterion 3 的重复导入路径抓到并修复（比较改用同一序列化
+  常量）。
+- **mock registry 三坑**（E2E 基建，协议层验证价值）：① 多段 repo 路径
+  正则（`[^/]+` → `(.+?)`）；② client 对 digest 做 `encodeURIComponent`
+  → mock 需 `decodeURIComponent`（manifest 分支有、blob 分支漏）；③
+  正则改多段后 group 索引位移（repo=1/ref=2），mock 误用 group 1 当 ref
+  ——tag 拉取"恰好"命中 repo 键而通过、digest 拉取必挂。
+- **测试基建**：pack 输出确定性文件名（`<profile>-<date>.dshpack`）→
+  同 outDir 二次调用覆盖，criterion 3 需唯一 pack 目录。
+
+### 发布前 OCI 分发不变量审查（2026-08-29，8 项专项）
+
+按 OCI 分发不变量清单逐项审查 `main..v0.4.1-oci`：
+
+| # | 不变量 | 结论 |
+|---|--------|------|
+| 1 | 三种 Digest 无混用（contentHash / blobDigest / manifestDigest） | ✅ 审查 + **类型收紧**：digests.ts 抽离三 alias（无依赖，registry/types 转导出），ImageStore blob 键 / `ImageManifest.artifact.digest` / `ResolvedImage.artifactDigest` 全部改为 `DshContentDigest`——语义边界显式化，grep 可审计 |
+| 2 | Pull 验证顺序不可退化（manifest → config → blob → contentHash → Signature → Trust → import） | ✅ 代码顺序确认；"先 import 再 verify trust" 被设计禁止（D39） |
+| 3 | `run(remote)` cache 语义：**缓存策略 ≠ 执行信任策略** | ✅ signed-but-untrusted 可 pull 缓存，`run --require-trusted` boot 前拒绝（E2E 判据 6）——下载与执行是两个安全边界 |
+| 4 | Remote tag mutable / digest immutable | ✅ E2E 判据 3：tag 更新后旧 manifest digest 仍可精确 pull——**冻结为发布 invariant** |
+| 5 | Registry ≠ Trust Authority（annotations/signer/metadata 全部忽略） | ✅ pull 不读任何 registry 提供的信任字段；Trust 只来自包内 v0.3 验签 + keyId 白名单 |
+| 6 | Auth secret 不进入日志/错误消息/Artifact | ✅ grep 确认 credentials 只出现在 auth.ts（解析/加载）与 client.ts（Authorization 头）；所有错误消息仅含 method/URL/status，无 headers |
+| 7 | Blob upload 幂等（HEAD 命中跳过；中断重试不影响 blobDigest） | ✅ 新增 E2E：同 image 重复 push → 第二次 HEAD 命中跳过上传，blobDigest 不变，registry 仅存一份 |
+| 8 | Local Store 幂等（同 digest+同内容 = 成功；同 digest+异内容 = FAIL） | ✅ putManifest `\n` 幂等 bug 已修复；新增单测固化（幂等成功 + 分歧报 digest mismatch） |
+
+发布 invariants（随 v0.4.1 冻结）：**digest 恒等 / pull 顺序不可退化 / cache≠trust /
+remote digest immutable / Registry≠Trust Authority / secret 不泄露 / 双幂等**
+（blob 上传幂等 + local store 幂等）。
+
+### 验收（2026-08-29，本地 OCI mock registry，协议与 GHCR 相同子集）
+
+- **北极星 E2E 6 条判据全过**：
+  1. push → 删本地 store → pull → **contentHash 相同** + Signature VALID +
+     Trust VERIFIED
+  2. tag 更新 → 新 manifest；**旧 digest 仍可精确 pull**（tag mutable /
+     digest immutable）
+  3. registry 返回篡改 blob → **OCI transport integrity FAIL**，DSH verify
+     不执行（判据 4/5 可区分）
+  4. 合法 blob 但 config contentHash 不符 → **DSH artifact integrity FAIL**
+     （transport 已过）
+  5. signed but untrusted → pull 可缓存 → `run --require-trusted` **boot 前
+     FAIL**（VALID ≠ TRUSTED 跨机器成立）
+  6. Bearer challenge → token fetch → 重试成功（auth 最小子集）
+- 全量 **101 测试**（16 文件，+13 registry）+ typecheck + signing CLI E2E
+  通过（v0.1–v0.4.0 无回归）
+- 真实 GHCR 验证（需 `DSH_REGISTRY_USERNAME/TOKEN`）留作手动/CI 步骤
 
 ## [v0.4.0] - 2026-08-29
 

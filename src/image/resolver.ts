@@ -10,13 +10,14 @@ import { imageManifestDigest, type ImageManifest } from './manifest.ts'
 import type { ImageReference } from './reference.ts'
 import { repository } from './reference.ts'
 import type { ImageStore } from './store.ts'
+import type { DshContentDigest } from './digests.ts'
 
 export interface ResolvedImage {
   ref: ImageReference
   manifest: ImageManifest
   manifestDigest: string
-  /** = manifest.artifact.digest = pack contentHash. */
-  artifactDigest: string
+  /** = manifest.artifact.digest = pack contentHash (D21). */
+  artifactDigest: DshContentDigest
 }
 
 export class ImageResolveError extends Error {

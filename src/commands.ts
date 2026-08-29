@@ -14,7 +14,7 @@ import type { PackDiff, PackOptions } from './types.ts'
 
 /** A parsed /pack invocation. */
 export interface ParsedInvocation {
-  sub: 'pack' | 'inspect' | 'verify' | 'install' | 'diff' | 'sign' | 'keygen' | 'image' | 'run'
+  sub: 'pack' | 'inspect' | 'verify' | 'install' | 'diff' | 'sign' | 'keygen' | 'image' | 'run' | 'push' | 'pull'
   positionals: string[]
   flags: Record<string, string | boolean>
 }
@@ -25,7 +25,7 @@ export function parseCommand(rawInput: string): ParsedInvocation {
   let sub: ParsedInvocation['sub'] = 'pack'
   if (tokens[0] === 'inspect' || tokens[0] === 'verify' || tokens[0] === 'install'
     || tokens[0] === 'diff' || tokens[0] === 'sign' || tokens[0] === 'keygen'
-    || tokens[0] === 'image' || tokens[0] === 'run') {
+    || tokens[0] === 'image' || tokens[0] === 'run' || tokens[0] === 'push' || tokens[0] === 'pull') {
     sub = tokens[0]
     tokens.shift()
   }
@@ -334,6 +334,34 @@ export async function runCommand(
           `  boot: ${result.boot}`,
         ]
         return { kind: 'success', text: lines.join('\n') }
+      }
+      case 'push': {
+        if (images === undefined) return { kind: 'error', text: '✗ push unavailable (image service not provided)' }
+        const localRef = invocation.positionals[0]
+        const remoteRef = invocation.positionals[1]
+        if (localRef === undefined || remoteRef === undefined) {
+          return { kind: 'error', text: '✗ usage: /pack push <localRef> <remoteRef>' }
+        }
+        const result = await images.push(localRef, remoteRef)
+        return {
+          kind: 'success',
+          text: `✓ pushed ${result.remoteRef}\n  contentHash: ${result.contentHash}\n  blobDigest: ${result.blobDigest}\n  manifest: ${result.ociManifestDigest}`,
+        }
+      }
+      case 'pull': {
+        if (images === undefined) return { kind: 'error', text: '✗ pull unavailable (image service not provided)' }
+        const remoteRef = invocation.positionals[0]
+        if (remoteRef === undefined) {
+          return { kind: 'error', text: '✗ usage: /pack pull <remoteRef> [--require-signature] [--require-trusted]' }
+        }
+        const result = await images.pull(remoteRef, {
+          ...(invocation.flags['require-signature'] === true ? { requireSignature: true } : {}),
+          ...(invocation.flags['require-trusted'] === true ? { requireTrusted: true } : {}),
+        })
+        return {
+          kind: 'success',
+          text: `✓ pulled ${remoteRef}\n  contentHash: ${result.contentHash}\n  signature: ${result.signature}\n  trust: ${result.trust}`,
+        }
       }
     }
   } catch (error) {

@@ -24,6 +24,8 @@ import { parseReference, repository } from './reference.ts'
 import { ImageResolveError, resolveImage, type ResolvedImage } from './resolver.ts'
 import type { ImageStore } from './store.ts'
 import { applyTrustPolicy, type TrustPolicy } from './trust.ts'
+import { pullImage, type PullResult } from './registry/pull.ts'
+import { pushImage, type PushResult } from './registry/push.ts'
 
 export interface ImportOptions {
   /** Apply a mutable tag after import, e.g. `why-daydream/agent:v1`. */
@@ -180,6 +182,32 @@ export class DefaultImageService {
     return resolveImage(this.store, ref)
   }
 
+  /** Push a local image to an OCI registry (DESIGN-v0.4.1.md §4). */
+  async push(localRef: string, remoteRef: string): Promise<PushResult> {
+    return pushImage(this.store, localRef, remoteRef, { installedDshVersion: this.context.installedDshVersion })
+  }
+
+  /** Pull from an OCI registry, digest-first (DESIGN-v0.4.1.md §5). */
+  async pull(remoteRef: string, options?: { requireSignature?: boolean; requireTrusted?: boolean }): Promise<PullResult> {
+    return pullImage(this.store, remoteRef, {
+      installedDshVersion: this.context.installedDshVersion,
+      ...(options?.requireSignature === true ? { requireSignature: true } : {}),
+      ...(options?.requireTrusted === true ? { requireTrusted: true } : {}),
+    })
+  }
+
+  /** Ensure a remote ref's image is local: pull when missing (cache-only policy). */
+  private async ensureLocal(refStr: string): Promise<void> {
+    try {
+      await resolveImage(this.store, parseReference(refStr))
+    } catch (error) {
+      if (!(error instanceof ImageResolveError)) throw error
+      // not local → digest-first pull (verify → trust → import). Trust policy
+      // enforcement stays in run() — a rejected image must fail before boot.
+      await pullImage(this.store, refStr, { installedDshVersion: this.context.installedDshVersion })
+    }
+  }
+
   /** All tag refs, for `image ls` (REPOSITORY / TAG / DIGEST). */
   async list(): Promise<Awaited<ReturnType<ImageStore['listRefs']>>> {
     return this.store.listRefs()
@@ -192,7 +220,13 @@ export class DefaultImageService {
    * degrades to a persistent install (image → mutable profile, D26).
    */
   async run(refStr: string, options?: RunOptions): Promise<RunResult> {
-    const resolved = await resolveImage(this.store, parseReference(refStr))
+    const ref = parseReference(refStr)
+    // remote refs: ensure the image is local first — pull (digest-first,
+    // verify → trust → import) when the tag/digest is not in the store.
+    if (ref.registry !== undefined) {
+      await this.ensureLocal(refStr)
+    }
+    const resolved = await resolveImage(this.store, ref)
     const bytes = await this.store.getBlob(resolved.artifactDigest)
     if (bytes === undefined) {
       throw new ImageResolveError(`artifact blob ${resolved.artifactDigest} missing from local store`)

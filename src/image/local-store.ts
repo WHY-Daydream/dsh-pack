@@ -12,6 +12,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { sha256Hex } from '../canonical.ts'
+import type { DshContentDigest } from './digests.ts'
 import { DIGEST_RE } from './reference.ts'
 import { imageManifestDigest, validateImageManifest, type ImageManifest } from './manifest.ts'
 import type { ImageRefEntry, ImageStore } from './store.ts'
@@ -37,7 +38,7 @@ export class LocalImageStore implements ImageStore {
     mkdirSync(this.manifestsDir, { recursive: true })
   }
 
-  private blobPath(digest: string): string {
+  private blobPath(digest: DshContentDigest): string {
     return join(this.blobsDir, digest.slice('sha256:'.length))
   }
 
@@ -56,7 +57,7 @@ export class LocalImageStore implements ImageStore {
     return join(this.refsDir, repo, tag)
   }
 
-  async putBlob(digest: string, bytes: Buffer): Promise<void> {
+  async putBlob(digest: DshContentDigest, bytes: Buffer): Promise<void> {
     // The digest is the pack contentHash ANCHOR (D21), not sha256 of the raw
     // bytes — the anchor↔bytes correspondence is established by the importer
     // (computePackContentHash) and re-verified at run time. The store only
@@ -73,12 +74,12 @@ export class LocalImageStore implements ImageStore {
     atomicWrite(target, bytes)
   }
 
-  async getBlob(digest: string): Promise<Buffer | undefined> {
+  async getBlob(digest: DshContentDigest): Promise<Buffer | undefined> {
     const target = this.blobPath(digest)
     return existsSync(target) ? readFileSync(target) : undefined
   }
 
-  async hasBlob(digest: string): Promise<boolean> {
+  async hasBlob(digest: DshContentDigest): Promise<boolean> {
     return existsSync(this.blobPath(digest))
   }
 
@@ -88,12 +89,12 @@ export class LocalImageStore implements ImageStore {
       throw new Error(`manifest digest mismatch: expected ${digest}, actual ${actual}`)
     }
     const target = this.manifestPath(digest)
+    const serialized = `${JSON.stringify(manifest, null, 2)}\n`
     if (existsSync(target)) {
-      const existing = readFileSync(target, 'utf8')
-      if (existing === JSON.stringify(manifest, null, 2)) return
+      if (readFileSync(target, 'utf8') === serialized) return // idempotent re-import
       throw new Error(`manifest ${digest} already exists with different content`)
     }
-    atomicWrite(target, `${JSON.stringify(manifest, null, 2)}\n`)
+    atomicWrite(target, serialized)
   }
 
   async getManifest(digest: string): Promise<ImageManifest | undefined> {
@@ -125,7 +126,7 @@ export class LocalImageStore implements ImageStore {
     rmSync(this.manifestPath(digest), { force: true })
   }
 
-  async removeBlob(digest: string): Promise<void> {
+  async removeBlob(digest: DshContentDigest): Promise<void> {
     rmSync(this.blobPath(digest), { force: true })
   }
 

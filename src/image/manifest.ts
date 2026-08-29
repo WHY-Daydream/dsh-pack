@@ -7,6 +7,7 @@
  */
 
 import { canonicalJson, sha256Hex } from '../canonical.ts'
+import type { DshContentDigest } from './digests.ts'
 
 export const IMAGE_MANIFEST_MEDIA_TYPE = 'application/vnd.dsh.image.manifest.v1+json'
 export const PACK_MEDIA_TYPE = 'application/vnd.dsh.pack.v1+gzip'
@@ -18,8 +19,8 @@ export interface ImageManifest {
   schemaVersion: 1
   mediaType: typeof IMAGE_MANIFEST_MEDIA_TYPE
   artifact: {
-    /** = pack contentHash — the immutable identity anchor. */
-    digest: string
+    /** = pack contentHash — the immutable identity anchor (D21). */
+    digest: DshContentDigest
     /** pack byte size. */
     size: number
     mediaType: typeof PACK_MEDIA_TYPE
@@ -38,7 +39,7 @@ export interface ImageManifest {
 }
 
 export interface BuildImageManifestInput {
-  artifactDigest: string
+  artifactDigest: DshContentDigest
   artifactSize: number
   configHash: string
   dshVersion: string

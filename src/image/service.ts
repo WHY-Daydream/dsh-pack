@@ -161,6 +161,15 @@ export class DefaultImageService {
     }
     if (ref.digest === undefined) throw new Error('reference must carry a tag or a digest')
     const resolved = await resolveImage(this.store, ref)
+    // Dangling-ref guard: an image still referenced by any tag must not be
+    // deleted — "CAS 可以脏，但引用图不能坏" (DESIGN-v0.4.md §7). Deleting
+    // the manifest+blob here would break every other tag pointing at them.
+    // Reference counting / GC is the v0.4.1 reservation.
+    const live = (await this.store.listRefs()).filter((e) => e.manifestDigest === resolved.manifestDigest)
+    if (live.length > 0) {
+      const names = live.map((e) => `${e.repo}:${e.tag}`).join(', ')
+      throw new Error(`image ${refStr} is still referenced by tag(s): ${names} — remove those tags first`)
+    }
     await this.store.removeManifest(resolved.manifestDigest)
     await this.store.removeBlob(resolved.artifactDigest)
   }

@@ -54,6 +54,31 @@ describe('parseReference (D21/D22 grammar)', () => {
     expect(() => parseReference('agent@sha256:' + 'A'.repeat(64))).toThrow(/digest/)
   })
 
+  it('rejects every malicious/boundary form — never guess (invariant 7)', () => {
+    expect(() => parseReference('foo:')).toThrow(/tag/)           // empty tag
+    expect(() => parseReference(':latest')).toThrow(ImageReferenceError) // missing name
+    // double @: the LAST @ wins as the digest separator, leaving an invalid
+    // name — still loudly rejected (message is about the name, not the digest)
+    expect(() => parseReference('foo@@sha256:' + 'a'.repeat(64))).toThrow(ImageReferenceError)
+    expect(() => parseReference('foo@sha256:')).toThrow(/digest/) // empty digest
+    expect(() => parseReference('../foo:v1')).toThrow(/traversal/) // path traversal
+    expect(() => parseReference('foo/./bar:v1')).toThrow(/traversal/) // dot segment
+    expect(() => parseReference('/foo:v1')).toThrow(/slash/)      // leading slash
+    expect(() => parseReference('foo//bar:v1')).toThrow(/slash/)  // double slash
+    expect(() => parseReference('foo/')).toThrow(/slash/)         // trailing slash
+    // double colon: the LAST ':' wins as the tag separator, leaving an
+    // invalid name — still loudly rejected (message is about the name)
+    expect(() => parseReference('foo:v1:v2')).toThrow(ImageReferenceError)
+  })
+
+  it('allows tag+digest coexistence (frozen by protocol, OCI-style)', () => {
+    const digest = 'sha256:' + 'a'.repeat(64)
+    const ref = parseReference(`foo:v1@${digest}`)
+    expect(ref.tag).toBe('v1')
+    expect(ref.digest).toBe(digest)
+    expect(formatReference(ref)).toBe(`foo:v1@${digest}`)
+  })
+
   it('formats canonically and exposes the immutable digest form', () => {
     const ref = parseReference('ghcr.io/why-daydream/agent:v1')
     expect(repository(ref)).toBe('ghcr.io/why-daydream/agent')
@@ -197,5 +222,34 @@ describe('applyTrustPolicy (D29, VALID ≠ TRUSTED)', () => {
     const noWhitelist = applyTrustPolicy(section('ok', 'VALID (ed25519, Trust: N/A)'), { requireTrusted: true })
     expect(noWhitelist.ok).toBe(false)
     expect(noWhitelist.error).toContain('no DSH_PACK_TRUSTED_KEYS')
+  })
+
+  it('keeps require-signature and require-trusted orthogonal (the 4×4 matrix)', () => {
+    const unsigned = section('warn', 'unsigned pack')
+    const signedTrusted = section('ok', 'VALID (ed25519, Trust: VERIFIED)')
+    const signedUntrusted = section('ok', 'VALID (ed25519, Trust: UNTRUSTED)')
+    const invalid = section('fail', 'ed25519 verification FAILED')
+
+    // unsigned: WARN/PASS by default; FAIL under either requirement
+    expect(applyTrustPolicy(unsigned, {}).ok).toBe(true)
+    expect(applyTrustPolicy(unsigned, { requireSignature: true }).ok).toBe(false)
+    expect(applyTrustPolicy(unsigned, { requireTrusted: true }).ok).toBe(false)
+
+    // signed + untrusted: PASS by default; require-trusted FAILs while
+    // require-signature PASSes — the two knobs stay independent
+    expect(applyTrustPolicy(signedUntrusted, {}).ok).toBe(true)
+    expect(applyTrustPolicy(signedUntrusted, { requireSignature: true }).ok).toBe(true)
+    expect(applyTrustPolicy(signedUntrusted, { requireTrusted: true }).ok).toBe(false)
+
+    // signed + trusted: PASS under everything
+    expect(applyTrustPolicy(signedTrusted, {}).ok).toBe(true)
+    expect(applyTrustPolicy(signedTrusted, { requireSignature: true, requireTrusted: true }).ok).toBe(true)
+
+    // invalid signature: reported at the policy layer; hard-failed by the
+    // verify layer (run() gates on report.ok before any policy applies), so
+    // the default row of the matrix is enforced upstream.
+    expect(applyTrustPolicy(invalid, {}).signature).toBe('INVALID')
+    expect(applyTrustPolicy(invalid, { requireSignature: true }).ok).toBe(false)
+    expect(applyTrustPolicy(invalid, { requireTrusted: true }).ok).toBe(false)
   })
 })

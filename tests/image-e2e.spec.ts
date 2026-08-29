@@ -11,7 +11,7 @@
  * Skipped when `pnpm` is not available on PATH.
  */
 import { execFile } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -130,6 +130,28 @@ describe('v0.4 North-Star E2E', () => {
     await expect(images.run('org/agent:prod', {})).rejects.toThrow(/verification failed before boot/)
   })
 
+  it.runIf(hasPnpm)('run 失败不污染 Profile（invariant 4）：失败后无 .run-* 残留，现有 profile 原样', async () => {
+    const root = tempRoot('nopollute')
+    const { file } = await makeSignedPack(root, root)
+    const { images, home } = makeImageEnv(root)
+
+    // a pre-existing user profile that must survive untouched
+    mkdirSync(join(home, 'profiles', 'user-profile'), { recursive: true })
+    writeFileSync(join(home, 'profiles', 'user-profile', 'marker.txt'), 'keep-me')
+
+    const imported = await images.import(file, { tag: 'org/agent:v1' })
+    const blobPath = join(root, 'store', 'blobs', 'sha256', imported.digest.slice(7))
+    writeFileSync(blobPath, '# TAMPERED\n')
+
+    await expect(images.run('org/agent:v1', {})).rejects.toThrow(/verification failed before boot/)
+
+    // no temporary runtime appeared; the existing profile is byte-identical
+    const profiles = readdirSync(join(home, 'profiles'))
+    expect(profiles.some((p) => p.startsWith('.run-'))).toBe(false)
+    expect(profiles).toContain('user-profile')
+    expect(readFileSync(join(home, 'profiles', 'user-profile', 'marker.txt'), 'utf8')).toBe('keep-me')
+  })
+
   it.runIf(hasPnpm)('criterion 4: untrusted 签名 → run --require-trusted FAIL（Signature 仍 VALID）', async () => {
     const root = tempRoot('untrusted')
     const { file, keyId } = await makeSignedPack(root, root)
@@ -152,6 +174,10 @@ describe('v0.4 North-Star E2E', () => {
     process.env.DSH_PACK_TRUSTED_KEYS = keyId
     await expect(images.run('org/agent:untrusted', { requireTrusted: true })).rejects.toThrow(/trust policy rejected/)
     delete process.env.DSH_PACK_TRUSTED_KEYS
+
+    // invariant 5: trust is enforced BEFORE materialization — a rejected
+    // image must never reach pnpm install, so no .run-* profile may exist
+    expect(readdirSync(join(makeImageEnv(root).home, 'profiles')).some((p) => p.startsWith('.run-'))).toBe(false)
 
     // without require-trusted the same image runs (signature VALID, trust UNTRUSTED)
     process.env.DSH_PACK_TRUSTED_KEYS = keyId

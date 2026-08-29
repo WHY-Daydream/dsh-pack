@@ -67,8 +67,19 @@ export function parseReference(ref: string): ImageReference {
     if (!TAG_RE.test(tag)) throw new ImageReferenceError(`invalid tag ${JSON.stringify(tag)}`)
   }
 
-  // path: [registry/]namespace.../name
-  const parts = rest.split('/').filter((p) => p !== '')
+  // path: [registry/]namespace.../name — never guess: leading, double or
+  // trailing slashes are invalid forms; reject instead of silently normalizing.
+  if (rest.startsWith('/') || rest.endsWith('/') || rest.includes('//')) {
+    throw new ImageReferenceError(`invalid image reference ${JSON.stringify(input)} (leading, double or trailing slash)`)
+  }
+  const parts = rest.split('/')
+  // '.' / '..' segments are traversal attempts — reject BEFORE the registry
+  // heuristic (a '..' would otherwise be swallowed as a dot-containing host).
+  for (const segment of parts) {
+    if (segment === '.' || segment === '..') {
+      throw new ImageReferenceError(`invalid image reference ${JSON.stringify(input)} (path traversal)`)
+    }
+  }
   if (parts.length === 0) throw new ImageReferenceError(`missing image name in ${JSON.stringify(input)}`)
   const name = parts[parts.length - 1] as string
   if (!NAME_SEGMENT_RE.test(name)) {

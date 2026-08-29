@@ -3,12 +3,12 @@
  * manifest + tag, digest = contentHash D21), inspect, mutable tags (D22),
  * remove (tag / digest forms) and digest-first resolution.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { computeConfigHash } from '../src/manifest.js'
-import { buildTarGz, checksumsJson, type PackFileEntry } from '../src/pack-builder.js'
+import { buildTarGz, checksumsJson, openPack, type PackFileEntry } from '../src/pack-builder.js'
 import { prettyJson } from '../src/canonical.js'
 import { LocalImageStore } from '../src/image/local-store.js'
 import { DefaultImageService } from '../src/image/service.js'
@@ -127,10 +127,33 @@ describe('DefaultImageService', () => {
     expect((await images.list()).find((e) => e.tag === 'v1')).toBeUndefined()
     expect(existsSync(join(root, 'store', 'manifests', 'sha256', imported.manifestDigest.slice(7)))).toBe(true)
 
-    // digest form removal clears manifest + blob
+    // dangling-ref guard (invariant 2): digest removal while 'latest' still
+    // references the image must FAIL — deleting would break the live tag
+    await expect(images.remove(`org/agent@${imported.manifestDigest}`)).rejects.toThrow(/still referenced by tag\(s\): org\/agent:latest/)
+
+    // after clearing the remaining tag, digest form removal clears manifest + blob
+    await images.remove('org/agent:latest')
     await images.remove(`org/agent@${imported.manifestDigest}`)
     expect(existsSync(join(root, 'store', 'manifests', 'sha256', imported.manifestDigest.slice(7)))).toBe(false)
     expect(existsSync(join(root, 'store', 'blobs', 'sha256', imported.digest.slice(7)))).toBe(false)
+  })
+
+  it('image digest == the pack contentHash — one artifact identity (invariant 1)', async () => {
+    const root = tempRoot('identity')
+    const { images } = makeService(root)
+    const file = await makePackFile(root)
+    const imported = await images.import(file, { tag: 'org/agent:v1' })
+    // the anchor declared inside the pack's own checksums.json must equal the
+    // image digest — import/tag/inspect/run all share the same identity (D21)
+    const opened = await openPack(readFileSync(file))
+    try {
+      const checksums = JSON.parse(readFileSync(join(opened.root, 'metadata/checksums.json'), 'utf8')) as { contentHash: string }
+      expect(checksums.contentHash).toBe(imported.digest)
+    } finally {
+      rmSync(opened.root, { recursive: true, force: true })
+    }
+    const info = await images.inspect('org/agent:v1')
+    expect(info.artifactDigest).toBe(imported.digest)
   })
 
   it('resolves by tag and digest (digest-first)', async () => {

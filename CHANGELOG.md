@@ -46,17 +46,49 @@ Artifact / Identity / Version / Trust / Distribution / Runtime 六件事串成
   由 import 的 `computePackContentHash` 与 run 的 verify 保证（单测曾把两者
   混淆，已修正并固化断言）。
 
+### 发布前 Image Model 不变量审查（2026-08-29，8 项专项）
+
+按 Image Model 不变量清单逐项审查 `main..v0.4-image`，确认 6 项成立、
+修复 3 个问题：
+
+| 不变量 | 结论 |
+|---|---|
+| 1. digest 恒等（digest == contentHash，全系统单一 Artifact Identity） | ✅ verify 重算与 import 锚点同算法，E2E 闭环实证 |
+| 2. Tag mutable / Digest immutable，rm 不产生 dangling ref | ❌ **F-A 修复** |
+| 3. CAS 原子性（可脏不可坏：refs 最后写，不允许 dangling ref） | ✅ import 顺序 blob→manifest→refs；tag() 先 resolve |
+| 4. run 不污染 Profile（失败无残留，现有 profile 原样） | ✅ install 管线 try/finally 清理 staging |
+| 5. Trust 顺序（untrusted 必须在物化/pnpm 之前失败） | ✅ run：verify → policy → installPack |
+| 6. require-signature / require-trusted 正交（4×4 矩阵） | ✅ 两个检查独立，VALID ≠ TRUSTED 保留 |
+| 7. Reference Parser 严格性（never guess） | ❌ **F-B / F-B2 修复** |
+| 8. 存储隔离（只有 LocalImageStore 知道磁盘布局） | ✅ grep 确认无泄漏（index.ts 组合根除外） |
+
+修复：
+
+- **F-A（不变量 2）**：`image rm <digest 形态>` 在仍有其他 tag 引用该
+  manifest 时拒绝删除（"CAS 可以脏，但引用图不能坏"）；引用计数/GC 留
+  v0.4.1。
+- **F-B（不变量 7）**：reference parser 拒绝前导/双/尾斜杠
+  （`/foo`、`foo//bar`、`foo/`），不再静默归一化。
+- **F-B2（不变量 7）**：`. / ..` 路径段在任何启发式之前拒绝——`..` 原会
+  被 registry 判定（含 `.`）吞掉变成 traversal 向量（store 层 `..` 守卫
+  兜底，parser 层补强）。
+
+新增不变量测试：parser 恶意/边界输入（9 种）、traversal 守卫、trust 4×4
+正交矩阵、rm dangling-ref 守卫、digest 恒等（import digest == 包内
+checksums.json contentHash）、run 失败不污染 Profile、trust 拒绝后无物化。
+
 ### 验收（2026-08-29）
 
-- 19 个 image 测试全绿（reference/manifest/local-store/resolver/trust 单测 +
-  DefaultImageService 服务层 + 北极星 E2E）
+- 24 个 image 测试全绿（reference/manifest/local-store/resolver/trust 单测 +
+  DefaultImageService 服务层 + 北极星 E2E + 不变量测试）
 - **北极星 E2E（DESIGN-v0.4.md §17，真实 pnpm frozen install）**：
   1. run 闭环：pack --portable → sign → import --tag agent:v1 → 删原 Profile →
      run → 临时 runtime 的 configHash == 原始 + Signature VALID + Trust VERIFIED
   2. tag agent:latest → 与 v1 同一 digest
   3. 篡改本地 blob → run **boot 前 FAIL**
   4. 未在白名单的 key 签名 → run --require-trusted FAIL（Signature 仍 VALID）
-- 全量测试 + typecheck 通过（v0.1–v0.3 无回归）
+- 全量 **88 测试** + typecheck + signing CLI E2E（23 断言）通过（v0.1–v0.3
+  无回归）
 
 ## [v0.3.0] - 2026-08-29
 

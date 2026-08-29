@@ -62,6 +62,17 @@ export interface PackagerContext {
   packagerVersion?: string
 }
 
+/** Read the installed dsh version from the install anchor (D15). */
+export function readInstalledDshVersion(): string {
+  const anchor = resolveInstallAnchor()
+  try {
+    const pkg = JSON.parse(readFileSync(anchor.anchor, 'utf8')) as { version?: string }
+    return pkg.version ?? 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
 /** Default in-process implementation of the packager service. */
 export class DefaultPackager implements PackagerService {
   constructor(private readonly context: PackagerContext = {}) {}
@@ -71,14 +82,7 @@ export class DefaultPackager implements PackagerService {
   }
 
   private installedDshVersion(): string {
-    if (this.context.installedDshVersion !== undefined) return this.context.installedDshVersion
-    const anchor = resolveInstallAnchor()
-    try {
-      const pkg = JSON.parse(readFileSync(anchor.anchor, 'utf8')) as { version?: string }
-      return pkg.version ?? 'unknown'
-    } catch {
-      return 'unknown'
-    }
+    return this.context.installedDshVersion ?? readInstalledDshVersion()
   }
 
   async pack(opts: PackOptions): Promise<PackResult> {

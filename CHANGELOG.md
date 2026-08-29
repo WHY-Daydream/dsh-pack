@@ -5,9 +5,58 @@
 
 ## [Unreleased]
 
-- **v0.4 规划**：Agent Image / Distribution Model（`.dshpack` 如何成为正式发布单元：
-  `dsh push/pull/run`），随后 v0.5 Encryption（私密插件源码 / 企业离线分发场景才需要）。
+- **v0.4.1 规划**：OCI push/pull（`.dshpack` → OCI blob + DSH manifest → registry，
+  digest-first 拉取 D28）；trust.yaml 细粒度策略；image lock（tag → digest 固定）。
+- **v0.5 规划**：Encryption（私密插件源码 / 企业离线分发场景才需要）。
   Signing 已知边界（吊销 / 轮换 / 多签名 / 过期）同列后续。
+
+## [v0.4.0] - 2026-08-29
+
+### Named + Versioned + Runnable Agent Image（Local Image Model）
+
+定位演进：v0.1 可验证快照 → v0.2 可移植 Artifact → v0.3 可信 Artifact →
+**v0.4 可命名、可版本化、可运行的 Image**。第一次把
+Artifact / Identity / Version / Trust / Distribution / Runtime 六件事串成
+一个完整模型。`.dshpack` v1 包格式**不变**（D23）——Image 只是它的分发视图。
+
+### Added
+
+- **Image Reference**（D21/D22）：`[registry/][namespace/]name[:tag][@digest]`
+  Docker 兼容语法；**Tag mutable、Digest immutable**（digest = `sha256:` + 64 hex）。
+- **digest = contentHash**（D21）：不发明新哈希——Image Digest 直接映射
+  v0.3 的 contentHash 锚点，Pack/Verify/Sign/Import/Run 共用同一个 immutable identity。
+- **Image Manifest**（D24）：独立于 `.dshpack` 的分发元数据
+  （`application/vnd.dsh.image.manifest.v1+json`），含 artifact digest/size、
+  configHash、platform（dsh/node/pnpm）、OCI 兼容 annotations（D31）。
+- **Local Image Store**（D25）：`$DSH_HOME/images/` 内容寻址存储
+  （blobs/sha256 + manifests/sha256 + refs/，原子写）。
+- **`/pack image` 命令面**：`import`（blob + manifest + tag）、`ls`、`inspect`、
+  `tag`（mutable 别名）、`rm`（tag / digest 形态）。
+- **`/pack run <ref>`**（D27）：resolve → v0.3 全量 verify（integrity + signature +
+  D15 版本门禁）→ trust policy → 物化**临时 runtime profile**（`.run-<uuid>`，
+  不触碰现有 Profile，D26/D27）→ boot 交接；`--require-signature` /
+  `--require-trusted` / `--profile <name>`（持久化 install）。
+- **Trust 桥接 v0.3**（D29）：不重复实现验签；VALID ≠ TRUSTED 延续（D19）。
+
+### 工程笔记
+
+- **digest 语义澄清**：blob digest = contentHash **锚点**（排除 checksums/
+  signature/provenance 的复合哈希），不是原始 archive 字节的 sha256——两者
+  不同。store 只校验 digest 格式与"同 digest 同内容"一致性；锚点↔字节的对应
+  由 import 的 `computePackContentHash` 与 run 的 verify 保证（单测曾把两者
+  混淆，已修正并固化断言）。
+
+### 验收（2026-08-29）
+
+- 19 个 image 测试全绿（reference/manifest/local-store/resolver/trust 单测 +
+  DefaultImageService 服务层 + 北极星 E2E）
+- **北极星 E2E（DESIGN-v0.4.md §17，真实 pnpm frozen install）**：
+  1. run 闭环：pack --portable → sign → import --tag agent:v1 → 删原 Profile →
+     run → 临时 runtime 的 configHash == 原始 + Signature VALID + Trust VERIFIED
+  2. tag agent:latest → 与 v1 同一 digest
+  3. 篡改本地 blob → run **boot 前 FAIL**
+  4. 未在白名单的 key 签名 → run --require-trusted FAIL（Signature 仍 VALID）
+- 全量测试 + typecheck 通过（v0.1–v0.3 无回归）
 
 ## [v0.3.0] - 2026-08-29
 

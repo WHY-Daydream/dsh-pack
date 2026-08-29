@@ -91,6 +91,27 @@ export function computeContentHash(files: Record<string, string>): string {
   return `sha256:${sha256Hex(lines.join('\n'))}`
 }
 
+/**
+ * The contentHash ANCHOR of a `.dshpack` buffer: sha256 over every real entry
+ * except the derived metadata files (checksums/signature/provenance, D17
+ * extension). This is exactly the value signatures cover (v0.3) and image
+ * digests reference (v0.4 D21) — one immutable identity across the whole model.
+ */
+export async function computePackContentHash(buffer: Buffer): Promise<string> {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-pack-anchor-'))
+  try {
+    await extractTarGz(buffer, root)
+    const hashes: Record<string, string> = {}
+    for (const file of collectFiles(root)) {
+      if (HASH_EXCLUDED_FILES.has(file)) continue
+      hashes[file] = sha256Hex(readFileSync(join(root, file)))
+    }
+    return computeContentHash(hashes)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
 /** checksums.json content (files map excludes checksums.json — no self-reference). */
 export function checksumsJson(contentHash: string, files: Record<string, string>): string {
   return prettyJson({ schemaVersion: 1, contentHash, files })

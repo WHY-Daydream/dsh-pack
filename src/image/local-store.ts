@@ -88,12 +88,12 @@ export class LocalImageStore implements ImageStore {
       throw new Error(`manifest digest mismatch: expected ${digest}, actual ${actual}`)
     }
     const target = this.manifestPath(digest)
+    const serialized = `${JSON.stringify(manifest, null, 2)}\n`
     if (existsSync(target)) {
-      const existing = readFileSync(target, 'utf8')
-      if (existing === JSON.stringify(manifest, null, 2)) return
+      if (readFileSync(target, 'utf8') === serialized) return // idempotent re-import
       throw new Error(`manifest ${digest} already exists with different content`)
     }
-    atomicWrite(target, `${JSON.stringify(manifest, null, 2)}\n`)
+    atomicWrite(target, serialized)
   }
 
   async getManifest(digest: string): Promise<ImageManifest | undefined> {

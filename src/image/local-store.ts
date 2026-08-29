@@ -11,7 +11,7 @@ import {
   existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { sha256Hex } from '../canonical.ts'
+import { canonicalJson, sha256Hex } from '../canonical.ts'
 import type { DshContentDigest } from './digests.ts'
 import { DIGEST_RE } from './reference.ts'
 import { imageManifestDigest, validateImageManifest, type ImageManifest } from './manifest.ts'
@@ -91,7 +91,17 @@ export class LocalImageStore implements ImageStore {
     const target = this.manifestPath(digest)
     const serialized = `${JSON.stringify(manifest, null, 2)}\n`
     if (existsSync(target)) {
-      if (readFileSync(target, 'utf8') === serialized) return // idempotent re-import
+      // Idempotency is SEMANTIC: the same digest + same content must succeed
+      // regardless of JSON key order in the stored file (canonicalJson sorts
+      // keys — an import-built manifest and a pull-parsed one serialize
+      // differently but carry identical content).
+      let existing: unknown
+      try {
+        existing = JSON.parse(readFileSync(target, 'utf8'))
+      } catch {
+        throw new Error(`manifest ${digest} already exists with different content`)
+      }
+      if (canonicalJson(existing) === canonicalJson(manifest)) return // idempotent re-import
       throw new Error(`manifest ${digest} already exists with different content`)
     }
     atomicWrite(target, serialized)

@@ -314,7 +314,115 @@ v0.4.2 可以开发（image lock 等）
 
 ---
 
-*本文档 v0.4.2 第一阶段设计定稿（2026-08-29）。冻结 D41–D49；v0.4.1 的
+## 11. trust.yaml（冻结，D50–D56）
+
+**定位**：Trust Policy ≠ "保存 trusted keys 的配置文件"——它是 **Remote Image
+Execution Policy**：回答"这个 registry/namespace 下的 image，是否必须有签名？
+签名是否必须来自受信任 Key？允许哪些 Key？不满足时允许 pull/run 吗？"
+
+与 `image lock` 分层（Lock ≠ Trust，D47/D49 延续）：
+
+```text
+image lock    解决"到底运行哪个版本？"（immutable pinning）
+trust.yaml    解决"这个版本允许不允许运行？"（execution policy）
+```
+
+### 冻结决策
+
+| ID | 决策 |
+|----|------|
+| D50 | Trust Policy 是**本地策略**，不属于 Artifact（trust.yaml ∉ `.dshpack` / OCI manifest / provenance / registry metadata）——生产与开发可对同一 image 不同策略 |
+| D51 | 策略匹配对象是 **Remote Repository Pattern**（如 `ghcr.io/company/prod-*`），不只看 registry host（粒度太粗） |
+| D52 | **Most-specific-match wins**（最长 pattern 优先；等长按 pattern 字典序——确定性、与文件行序无关）；**不用 first match**（换行序不应改变安全策略） |
+| D53 | 无匹配规则 → **保持 v0.4.1 语义**（unsigned/signed-untrusted 默认允许 WARN；CLI `--require-*` 显式收紧）——backward-compatible |
+| D54 | Policy 与 CLI 关系**只能越叠越严**（Effective = Policy OR CLI tightening；CLI 永远不能放宽管理员策略） |
+| D55 | `trustedKeys` 只认 **keyId fingerprint**（`SHA256:<hex>`）；**不用 signer label**（`--signer` 只是 display label，D19 延续，绝不倒退） |
+| D56 | **Pull 与 Run 的 Policy 边界分开**（cache ≠ trust）：pull 只做 OCI+DSH integrity + Signature metadata → 允许进 cache；run 才评估 trust.yaml → PASS 才 materialize，FAIL 在 pnpm 前（`allowPull: false` 留待以后，v0.4.2 不做） |
+
+### 配置文件位置（冻结）
+
+```text
+$DSH_HOME/trust.yaml        ← Host / Environment Policy
+```
+
+**不是** `profile/trust.yaml`——Trust Policy 更接近本机"允不允许这个 Agent
+运行"（Host policy），而 Profile 是"Agent 要怎么运行"，层级不同。
+
+### 最小 Schema（冻结）
+
+```yaml
+version: 1
+
+registries:
+  "ghcr.io/company/prod-*":
+    requireSignature: true
+    requireTrusted: true
+    trustedKeys:
+      - SHA256:AAAA
+      - SHA256:BBBB
+
+  "ghcr.io/company/*":
+    requireSignature: true
+
+  "localhost:5000/*":
+    requireSignature: false
+    requireTrusted: false
+```
+
+**不加**（范围控制）：expiry / key rotation / deny / allow list / time
+constraints / signer names / certificate chains。
+
+### 内部架构（冻结）
+
+```text
+src/image/trust-policy.ts（Policy Engine，纯策略解析）
+  ├── schema/load/validate（$DSH_HOME/trust.yaml）
+  ├── glob 匹配 + most-specific 排序（D51/D52）
+  ├── mergeCli（D54：只能收紧）
+  └── Decision: { requireSignature, requireTrusted, trustedKeys?, matchedRule? }
+
+Remote Ref → TrustPolicy.resolve(repository) → Decision
+          → 现有 verify/trust machinery（D55 指纹检查并入 applyTrustPolicy）
+```
+
+Policy Engine 只解析策略；**验签仍复用 v0.3/v0.4 现有实现，不重新实现**
+（D55 的 fingerprint 检查作为 trustedKeys 分支并入 `image/trust.ts`）。
+
+### 测试判据（冻结）
+
+```text
+T0 无 trust.yaml → 完全保持 v0.4.1 行为
+T1 ghcr.io/company/* requireSignature=true → unsigned run FAIL
+T2 requireSignature=true + signed unknown key → PASS（无 requireTrusted）
+T3 requireTrusted=true + signed unknown key → FAIL
+T4 requireTrusted=true + trusted key → PASS
+T5 父规则宽松、子规则严格 → 最具体规则生效（ghcr.io/company/prod-* 胜 ghcr.io/*）
+T6 CLI --require-trusted + policy requireTrusted=false → effective=true
+T7 policy requireTrusted=true + CLI 无额外约束 → 仍 true
+T8 signer label 匹配但 key fingerprint 不匹配 → UNTRUSTED
+T9 untrusted pull → cache 成功；run → policy FAIL before materialization
+```
+
+（T5/T6/T9 最重要。）
+
+### lock × trust 组合 E2E（冻结）
+
+```text
+prod tag → manifest A → image lock → @sha256:A
+prod tag 后来 → manifest B
+trust.yaml: prod 规则 requireTrusted（A 的 key 在 trustedKeys）
+运行 lock → 仍拉 A → 验证 A 签名 → Trust policy → PASS
+
+然后：A 的 signer 从 trustedKeys 删除
+同一个 lock → 版本没变 → Trust policy changed → FAIL
+```
+
+说明 **Version identity 与 Trust policy 正交**：lock 钉版本，trust.yaml
+管准入；策略变更只影响准入，不改变版本身份。
+
+---
+
+*本文档 v0.4.2 第一阶段设计定稿（2026-08-29）。冻结 D41–D56；v0.4.1 的
 D32–D40 与 `.dshpack` v1 协议不受影响。实现顺序：DESIGN 冻结（本文）→
 PR CI workflow → GHCR E2E workflow → `scripts/ghcr-e2e.mjs`（8 项断言）→
 本地验证脚本语法 → CHANGELOG。真实 GHCR 运行须在 GitHub Actions

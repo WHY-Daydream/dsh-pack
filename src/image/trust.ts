@@ -12,8 +12,15 @@ import type { VerificationSection } from '../types.ts'
 export interface TrustPolicy {
   /** unsigned/invalid signature → FAIL (v0.4.0: `--require-signature`). */
   requireSignature?: boolean
-  /** signer fingerprint not in the whitelist → FAIL (`--require-trusted`). */
+  /** signer fingerprint not trusted → FAIL (`--require-trusted`). */
   requireTrusted?: boolean
+  /**
+   * Policy-level trusted key fingerprints (DESIGN-v0.4.2.md D55): when set,
+   * trust is decided by matching the signer's fingerprint against this list —
+   * overriding the env-whitelist marker. Identity is the keyId fingerprint,
+   * NEVER the signer label (D19/D55).
+   */
+  trustedKeys?: string[]
 }
 
 export interface TrustVerdict {
@@ -21,6 +28,19 @@ export interface TrustVerdict {
   signature: 'VALID' | 'INVALID' | 'MISSING'
   trust: 'VERIFIED' | 'UNTRUSTED' | 'N/A'
   error?: string
+}
+
+/** Extract the signer's full fingerprint (`sha256:<64 hex>`) from the detail. */
+function extractKeyFingerprint(detail: string): string | undefined {
+  const match = detail.match(/SHA256:([0-9a-f]{64})/)
+  return match === null ? undefined : `sha256:${match[1]}`
+}
+
+/** D55: fingerprint-in-policy-keys — case/prefix normalized (`SHA256:` vs `sha256:`). */
+function fingerprintInList(detail: string, keys: string[]): boolean {
+  const fp = extractKeyFingerprint(detail)
+  if (fp === undefined) return false
+  return keys.some((k) => k.toLowerCase().replace(/^sha256:/, '') === fp.replace(/^sha256:/, ''))
 }
 
 /** Apply the trust policy to a v0.3 Signature section (pure, testable). */
@@ -38,6 +58,10 @@ export function applyTrustPolicy(
   let trust: TrustVerdict['trust'] = 'N/A'
   if (detail.includes('Trust: VERIFIED')) trust = 'VERIFIED'
   else if (detail.includes('Trust: UNTRUSTED')) trust = 'UNTRUSTED'
+  // D55: policy-level trustedKeys override the env-whitelist marker
+  if (policy.trustedKeys !== undefined && policy.trustedKeys.length > 0) {
+    trust = fingerprintInList(detail, policy.trustedKeys) ? 'VERIFIED' : 'UNTRUSTED'
+  }
 
   if (policy.requireSignature === true && signatureState !== 'VALID') {
     return {

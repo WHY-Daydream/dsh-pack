@@ -31,6 +31,9 @@ import { pushImage, type PushResult } from './registry/push.ts'
 import { parseRemoteReference, registryBaseUrl, repoPath } from './registry/reference.ts'
 import type { OciManifestDigest } from './digests.ts'
 import { DEFAULT_LOCKFILE, addLockEntry, loadLockfile, saveLockfile } from './lockfile.ts'
+import {
+  loadTrustPolicy, mergeCliTightening, resolveTrustPolicy, type TrustPolicyDecision,
+} from './trust-policy.ts'
 
 export interface ImportOptions {
   /** Apply a mutable tag after import, e.g. `why-daydream/agent:v1`. */
@@ -242,14 +245,15 @@ export class DefaultImageService {
   }
 
   /** Ensure a remote ref's image is local: pull when missing (cache-only policy). */
-  private async ensureLocal(refStr: string): Promise<void> {
+  private async ensureLocal(refStr: string): Promise<PullResult | undefined> {
     try {
       await resolveImage(this.store, parseReference(refStr))
+      return undefined // already local (tag mirror from a previous pull)
     } catch (error) {
       if (!(error instanceof ImageResolveError)) throw error
       // not local → digest-first pull (verify → trust → import). Trust policy
       // enforcement stays in run() — a rejected image must fail before boot.
-      await pullImage(this.store, refStr, { installedDshVersion: this.context.installedDshVersion })
+      return pullImage(this.store, refStr, { installedDshVersion: this.context.installedDshVersion })
     }
   }
 
@@ -268,10 +272,17 @@ export class DefaultImageService {
     const ref = parseReference(refStr)
     // remote refs: ensure the image is local first — pull (digest-first,
     // verify → trust → import) when the tag/digest is not in the store.
+    let localRef = refStr
     if (ref.registry !== undefined) {
-      await this.ensureLocal(refStr)
+      const pulled = await this.ensureLocal(refStr)
+      if (pulled !== undefined && ref.digest !== undefined) {
+        // Digest-form remote ref: the local store is keyed by the DSH manifest
+        // digest (imageManifestDigest), NOT the OCI manifest digest — resolve
+        // the pulled image through its DSH manifest digest.
+        localRef = `local@${pulled.dshManifestDigest}`
+      }
     }
-    const resolved = await resolveImage(this.store, ref)
+    const resolved = await resolveImage(this.store, parseReference(localRef))
     const bytes = await this.store.getBlob(resolved.artifactDigest)
     if (bytes === undefined) {
       throw new ImageResolveError(`artifact blob ${resolved.artifactDigest} missing from local store`)
@@ -287,11 +298,25 @@ export class DefaultImageService {
       throw new Error(`image verification failed before boot: ${failed.join('; ')}`)
     }
 
-    // 2. trust policy (VALID ≠ TRUSTED, D19/D29)
+    // 2. trust policy (VALID ≠ TRUSTED, D19/D29): the LOCAL trust.yaml policy
+    //    (DESIGN-v0.4.2.md D50–D56) applies to REMOTE images; CLI can only
+    //    TIGHTEN it (D54). Local refs keep the v0.4.1 CLI-only semantics (D53).
     const signatureSection = report.sections.find((s) => s.name === 'Signature')
+    let decision: TrustPolicyDecision = {
+      requireSignature: options?.requireSignature === true,
+      requireTrusted: options?.requireTrusted === true,
+    }
+    if (ref.registry !== undefined) {
+      // D54: CLI can only TIGHTEN the local policy — effective = policy OR CLI
+      decision = mergeCliTightening(resolveTrustPolicy(loadTrustPolicy(this.context.home), repository(ref)), {
+        ...(options?.requireSignature === true ? { requireSignature: true } : {}),
+        ...(options?.requireTrusted === true ? { requireTrusted: true } : {}),
+      })
+    }
     const verdict = applyTrustPolicy(signatureSection, {
-      ...(options?.requireSignature === true ? { requireSignature: true } : {}),
-      ...(options?.requireTrusted === true ? { requireTrusted: true } : {}),
+      ...(decision.requireSignature ? { requireSignature: true } : {}),
+      ...(decision.requireTrusted ? { requireTrusted: true } : {}),
+      ...(decision.trustedKeys !== undefined ? { trustedKeys: decision.trustedKeys } : {}),
     })
     if (!verdict.ok) throw new Error(`image trust policy rejected: ${verdict.error}`)
 

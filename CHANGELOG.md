@@ -72,10 +72,51 @@ image lock / trust.yaml / prune（跑通真实 GHCR 后再做，顺序见 DESIGN
   T2 registry 返回与 locked digest 不匹配的 manifest → transport
   integrity FAIL ✓（mock 新增 manifest-swap tamper 模拟恶意 registry）。
 
+### trust.yaml（D50–D56 冻结，Remote Image Execution Policy）
+
+- **定位**：Trust Policy ≠ "trusted keys 配置文件"——是 `$DSH_HOME/trust.yaml`
+  的**本地执行策略**（Host/Environment Policy，不进 `.dshpack`/OCI
+  manifest/provenance/registry metadata，D50）；与 `image lock` 分层：
+  lock 解决"运行哪个版本"，trust.yaml 解决"这个版本允不允许运行"。
+- **最小 schema**（version 1 + registries map）：`requireSignature` /
+  `requireTrusted` / `trustedKeys`（keyId fingerprint，D55，**不用 signer
+  label**）；按 **remote repository pattern** 匹配（D51），
+  **most-specific-match wins**（最长 pattern，等长字典序，与文件行序无关，
+  D52）；无匹配规则 → 保持 v0.4.1 行为（D53，backward-compatible）。
+- **CLI 只能收紧不能放宽**（D54）：effective = Policy OR CLI；
+  `--require-*` 永远无法被策略中的 false 降级。
+- **Pull 与 Run 分离**（D56，cache ≠ trust）：pull 只做 OCI+DSH integrity
+  + Signature metadata → 允许进 cache；run 才评估 trust.yaml → FAIL 在
+  materialize/pnpm 前（`allowPull` 留待以后）。
+- **`src/image/trust-policy.ts`**：Policy Engine（load/validate/glob 匹配/
+  most-specific/mergeCli 决策）；`image/trust.ts` 扩展 trustedKeys 指纹
+  检查（D55）；`service.run` 对 remote ref 应用策略（local ref 保持 CLI
+  语义）。**验签复用 v0.3/v0.4 现有实现，未重新实现。**
+- **测试**（mock registry）：T0 无策略保持 v0.4.1 ✓ / T1 unsigned run FAIL
+  ✓ / T2 signed unknown key PASS ✓ / T3-T4 trustedKeys 拒/放 ✓ / T5
+  most-specific ✓ / T6 CLI 收紧 ✓ / T7 策略独立生效 ✓ / T8 signer label
+  无关 ✓ / T9 untrusted pull cache 成功 + run boot 前 FAIL ✓ /
+  **lock×trust 组合**：同一 lock 版本不变，trustedKeys 移除签名者后
+  trust FAIL（Version identity 与 Trust policy 正交）✓。
+
+### 工程笔记（trust.yaml 阶段抓到 3 个真问题）
+
+- **run() digest 形态 remote ref 无法本地解析**（真 bug）：本地 store 以
+  DSH manifest digest 为键，OCI manifest digest 查不到——`ensureLocal`
+  吞掉 resolve 错误后 run 再 resolve 仍失败（会连带挂掉 ghcr-e2e.mjs 的
+  `run(digestRef)`）。修复：ensureLocal 返回 PullResult，digest 形态经
+  `local@<dshManifestDigest>` 解析。
+- **trust-policy glob 通配符失效**（真 bug）：escapeRegExp 转义类漏 `*`，
+  `replaceAll('\\*', '.*')` 找不到转义形式，裸 `*` 被当作量词 → 所有含
+  `*` 的 pattern 不匹配。
+- **putManifest 幂等比较误报**（真 bug，与 \n 那次同类）：字节级比较对
+  import（插入序）与 pull（canonical 排序序）构造的同一语义 manifest
+  误报 "already exists"。修复：canonicalJson 归一化后**语义比较**。
+
 ### 验收状态
 
 - 本地验证：`node --check` 语法 OK；lib 导入路径全部存在；本地测试套件
-  **109 全绿**（17 文件，+6 lock 测试）。
+  **129 全绿**（19 文件，+6 lock +20 trust 测试）。
 - **真实 GHCR 运行须在 GitHub Actions `workflow_dispatch` 执行**（需
   `GITHUB_TOKEN` + `packages: write`，此环境无凭据不可本地运行真协议）——
   **Release Gate（§10）：GHCR 8/8 + image lock E2E 全过后才允许 v0.4.2

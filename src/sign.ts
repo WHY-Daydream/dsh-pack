@@ -85,10 +85,18 @@ export function verifySignatureValue(
  */
 export async function signPackBuffer(
   buffer: Buffer,
-  opts: { keyPath: string; signer?: string; packagerVersion?: string },
+  opts: { keyPath: string; signer?: string; packagerVersion?: string; force?: boolean },
 ): Promise<{ buffer: Buffer; signature: SignatureInfo }> {
   const pack = await openPack(buffer)
   try {
+    // Re-sign guard: replacing an existing signature is destructive, so it is
+    // refused unless --force is explicit (mirrors install --force, D13).
+    if (pack.files.includes('metadata/signature.json') && !opts.force) {
+      throw new PackError(
+        'this pack is already signed; use --force to replace the existing signature (explicit destructive behavior)',
+        1,
+      )
+    }
     // Per-entry hashes for the anchor (checksums.json is excluded by buildTarGz).
     const entryHashes: Record<string, string> = {}
     for (const file of pack.files) {
@@ -121,11 +129,24 @@ export async function signPackBuffer(
       signature: signatureBytes.toString('base64'),
       createdAt,
     }
+    // Lightweight provenance (v0.3 frozen, DESIGN.md Appendix E): links
+    // Artifact → Build → Signer. `--signer` is display metadata only — the
+    // cryptographic identity is keyId (sha256 of the public key DER).
+    const runtime = (pack.manifest as { runtime?: Record<string, unknown> } | undefined)?.runtime
     const provenance = {
       schemaVersion: 1,
-      signer: opts.signer ?? 'unknown',
-      tool: `@why-daydream/dsh-pack@${opts.packagerVersion ?? '0.3.0'}`,
-      contentHash,
+      artifact: { contentHash },
+      signing: {
+        algorithm: 'ed25519',
+        keyId,
+        signer: opts.signer ?? 'unknown',
+      },
+      build: {
+        dshPackVersion: opts.packagerVersion ?? '0.3.0',
+        dshVersion: typeof runtime?.dshVersion === 'string' ? runtime.dshVersion : 'unknown',
+        nodeVersion: typeof runtime?.nodeVersion === 'string' ? runtime.nodeVersion : process.versions.node,
+        pnpmVersion: typeof runtime?.pnpmVersion === 'string' ? runtime.pnpmVersion : 'unknown',
+      },
       createdAt,
     }
 
@@ -155,6 +176,7 @@ export async function signPackFile(file: string, opts: SignOptions): Promise<Sig
   const { buffer: signedBuffer, signature } = await signPackBuffer(buffer, {
     keyPath: opts.key,
     ...(opts.signer !== undefined ? { signer: opts.signer } : {}),
+    ...(opts.force === true ? { force: true } : {}),
   })
   const outDir = opts.outDir ?? dirname(file)
   mkdirSync(outDir, { recursive: true })

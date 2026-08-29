@@ -246,12 +246,14 @@ export class DefaultPackager implements PackagerService {
     return { ...inspection, file }
   }
 
-  async verify(file: string, opts?: { ignoreRuntimeVersion?: boolean }): Promise<VerificationReport> {
+  async verify(file: string, opts?: { ignoreRuntimeVersion?: boolean; requireSignature?: boolean }): Promise<VerificationReport> {
     const buffer = readFileSync(file)
     const installedDshVersion = this.installedDshVersion()
-    const { report, root } = opts?.ignoreRuntimeVersion === true
-      ? await verifyPack(buffer, { installedDshVersion, ignoreRuntimeVersion: true })
-      : await verifyPack(buffer, { installedDshVersion })
+    const { report, root } = await verifyPack(buffer, {
+      installedDshVersion,
+      ...(opts?.ignoreRuntimeVersion === true ? { ignoreRuntimeVersion: true } : {}),
+      ...(opts?.requireSignature === true ? { requireSignature: true } : {}),
+    })
     rmSync(root, { recursive: true, force: true })
     return report
   }

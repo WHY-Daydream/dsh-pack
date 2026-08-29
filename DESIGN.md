@@ -601,6 +601,8 @@ tests/                    单元 + E2E（vitest）
 | D15 | **Runtime 精确版本匹配**：install 时 dshVersion 不一致默认 FAIL，`--ignore-runtime-version` 放行（v0.1 不做 `^0.x` semver 范围） | §7.5, §8.4 | DSH 为 Developer Preview，防 breaking |
 | D16 | **Archive 提取安全**：路径归一化必须留在 staging root 内；禁止 symlink/hardlink/device/FIFO 条目 | §8.4 | 防恶意包路径逃逸 |
 | D17 | **contentHash 无自引用**：checksums.json 不入 files 映射，verify 重算比对 | §7.4 | 哈希与归档互不依赖 |
+| D18 | **re-sign 显式破坏**：已签包再 `/pack sign` 默认 FAIL，`--force` 显式替换（防官方签名被任意重签覆盖） | §8.1, Appendix E.2/E.4 | 与 install `--force`（D13）同原则 |
+| D19 | **VALID ≠ TRUSTED**：签名有效 ≠ 信任；Trust 判定只基于 keyId（指纹），`--signer` 仅为显示标签 | Appendix E.3/E.4 | 密码学身份与显示身份严格分离 |
 
 ---
 
@@ -629,7 +631,7 @@ tests/                    单元 + E2E（vitest）
 - 算法：**ed25519**（Node crypto 原生，`sign(null, data, key)` / `verify(null, data, key, sig)`）。
 - 文件（`/pack sign` 时写入包内 `metadata/`）：
   - `signature.json`：`{ schemaVersion: 1, algorithm: "ed25519", keyId, publicKey, contentHash, signature, createdAt }`——**自包含验签**（公钥内嵌，PEM spki）；`keyId` = 公钥 DER（spki）的 sha256（64 hex）。
-  - `provenance.json`：`{ schemaVersion: 1, signer, tool, contentHash, createdAt }`——人类可读来源。
+  - `provenance.json`：`{ schemaVersion: 1, artifact: { contentHash }, signing: { algorithm, keyId, signer }, build: { dshPackVersion, dshVersion, nodeVersion, pnpmVersion }, createdAt }`——轻量来源，把 **Artifact → Build → Signer** 连起来（v0.3 不上 SLSA/Sigstore，v0.4+ 再说）。
 - **被签对象 = contentHash 字符串**（非 archive 字节）：contentHash 是覆盖全部真实条目的完整性锚；签名文件与 checksums.json 一样属于**派生元数据，不参与 contentHash**（D17 扩展：排除集 = checksums.json + signature.json + provenance.json）→ `sign` 加签名**不改变**被签锚点 → sign-then-embed 保持有效。
 - **确定性重建**：`sign` 从原包提取 → 追加两个元数据文件 → 重新生成 checksums.json → 确定性 tar.gz（排序/mtime=0）→ 产出 `<name>.signed.dshpack`（原包不覆盖）。
 
@@ -637,26 +639,31 @@ tests/                    单元 + E2E（vitest）
 
 | 命令 | 行为 |
 |------|------|
-| `/pack keygen [--out <dir>]` | 生成 ed25519 密钥对：`dsh-pack-private.pem`（**chmod 0600**）+ `dsh-pack-public.pem`，打印 keyId |
-| `/pack sign <file> --key <pem> [--signer <name>] [--out <dir>]` | 嵌入签名 + provenance，产出 `<name>.signed.dshpack` |
+| `/pack keygen [--out <dir>]` | 生成 ed25519 密钥对：`dsh-pack-private.pem`（**chmod 0600**）+ `dsh-pack-public.pem`，打印 `Key fingerprint: SHA256:<keyId>` |
+| `/pack sign <file> --key <pem> [--signer <name>] [--out <dir>] [--force]` | 嵌入签名 + provenance，产出 `<name>.signed.dshpack`；**已签包默认拒绝（D18），`--force` 显式替换** |
 | `/pack verify <file> [--require-signature]` | Signature 分节；`--require-signature` 时未签名包 FAIL |
 
 ### E.3 verify Signature 分节（冻结）
 
 - 缺失 `signature.json` → **WARN**（`--require-signature` 下 **FAIL**）。
 - 存在则校验：schema（schemaVersion=1 / algorithm=ed25519 / keyId 64 hex / 公钥可解析）→ **锚点 = 实际文件字节重算的 contentHash**（绝不使用 checksums.json 声明的哈希——即使攻击者同时重写了 checksums.json，签名仍钉住真实内容，纵深防御）→ contentHash 比对 → ed25519 验签。
-- 信任白名单：`DSH_PACK_TRUSTED_KEYS`（逗号分隔 keyId）设置时，Signature 分节追加 `Trust: VERIFIED / UNTRUSTED`（不在白名单不判 FAIL，仅标记；v0.3 不强制）。
+- **VALID ≠ TRUSTED（冻结，D19）**：`Signature VALID` 只证明"对应私钥持有者确实签过该锚点"；`Trust VERIFIED` 才代表"该指纹在本地信任白名单内"。两者严格分离，绝不混用（CLI E2E 有专项断言：untrusted 指纹下 Signature 仍 VALID）。
+- 输出含 `Key SHA256:<keyId 前 12 位>…`——**指纹 = 密码学身份**，与 signer 标签无关。
+- 信任白名单：`DSH_PACK_TRUSTED_KEYS`（逗号分隔 keyId，可带 `SHA256:` 前缀，校验时归一化）。三态：未配置 → `Trust: N/A`；命中 → `Trust: VERIFIED`；未命中 → `Trust: UNTRUSTED`（Signature 仍 VALID，不判 FAIL，仅标记；v0.3 不强制）。
 
 ### E.4 密钥与安全边界
 
 - 私钥仅存在于打包机（chmod 0600）；`.dshpack` 内只含公钥，公钥泄露无风险。
 - **签名不加密**：secret redaction（D9）与签名互不替代——签名证明"谁产出"，redaction 保证"包里没有明文 secret"。
-- 已知边界：信任策略当前为 env 白名单；吊销/轮换/多签名 → v0.4+（与 Encryption、Agent Image 同列后续）。
+- **signer 不是信任根**：`--signer` 只是 provenance 里的人类可读标签（display metadata），**绝不参与 Trust 判定**；信任身份一律来自 public key fingerprint（keyId）。`/pack sign` 输出会明确标注 "display label only"。
+- **re-sign 冻结（D18）**：已含 `metadata/signature.json` 的包再次 `/pack sign` → **默认 FAIL**（exit 1）；`--force` 显式替换（覆盖旧签名与 provenance）——与 install `--force`（D13）同原则：破坏性行为必须显式，防止"官方签名包被任意重签覆盖"。
+- 已知边界：信任策略当前为 env 白名单（无吊销/轮换/过期/多签名）；私钥管理依赖用户自持（无 KMS/HSM 集成）→ 均列 v0.4+（与 Encryption、Agent Image 同列后续）。
 
 ### E.5 验证
 
-- 单测：keygen 往返（keyId 与公钥 DER 一致）、sign/verify 往返、篡改检测（翻转签名字节 / 锚点不一致 / 伪造公钥）、未签名分节（warn + require 失败）、服务级 sign → verify VALID。
-- 全量：54 单测 + 6 sign 测试 + 2 真实 pnpm E2E + typecheck 全绿（2026-08-29）。
+- 单测：keygen 往返（keyId 与公钥 DER 一致）、sign/verify 往返、篡改检测（翻转签名字节 / 锚点不一致 / 伪造公钥）、未签名分节（warn + require 失败）、**re-sign 默认拒绝 + `--force` 替换**、**trust 三态（N/A/VERIFIED/UNTRUSTED + `SHA256:` 前缀归一化）**、服务级 sign → verify VALID。
+- **真实 CLI 端到端验收（`scripts/signing-e2e.mjs`，23 项断言全过）**：keygen → pack+sign → verify（VALID/Trust N/A）→ trusted/untrusted（VALID≠TRUSTED）→ unsigned+require → tamper → re-sign。**验收发现并修复 1 个真实 bug**：`DefaultPackager.verify` 未透传 `requireSignature`（单测直调 verifyPack 未覆盖服务层），已修复并补服务级回归测试。
+- 全量：64 单测 + 2 真实 pnpm E2E + signing CLI E2E + typecheck 全绿（2026-08-29）。
 
 
 

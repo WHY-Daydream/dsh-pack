@@ -91,8 +91,17 @@ describe('sign + verify', () => {
       expect(info.algorithm).toBe('ed25519')
       expect(info.keyId).toBe(key.keyId)
       expect(info.contentHash).toMatch(/^sha256:[0-9a-f]{64}$/)
-      const provenance = JSON.parse(readFileSync(join(opened.root, 'metadata/provenance.json'), 'utf8')) as { signer: string }
-      expect(provenance.signer).toBe('why-daydream')
+      // provenance links Artifact → Build → Signer; --signer is a display label
+      const provenance = JSON.parse(readFileSync(join(opened.root, 'metadata/provenance.json'), 'utf8')) as {
+        artifact?: { contentHash?: string }
+        signing?: { algorithm?: string; keyId?: string; signer?: string }
+        build?: { dshPackVersion?: string; dshVersion?: string; nodeVersion?: string }
+      }
+      expect(provenance.signing?.signer).toBe('why-daydream')
+      expect(provenance.signing?.keyId).toBe(key.keyId)
+      expect(provenance.artifact?.contentHash).toBe(info.contentHash)
+      expect(provenance.build?.dshVersion).toBe(DSH_VERSION)
+      expect(provenance.build?.dshPackVersion).toBe('0.3.0')
 
       // the anchor must be unchanged by signing (signature files are excluded)
       expect(info.contentHash).toBe(signature.contentHash)
@@ -128,6 +137,91 @@ describe('sign + verify', () => {
 
     // bogus public key
     expect(verifySignatureValue({ ...info, publicKey: 'not a pem' }, info.contentHash).ok).toBe(false)
+  })
+})
+
+describe('re-sign guard (default FAIL, --force replaces)', () => {
+  it('refuses to sign an already-signed pack without --force', async () => {
+    const root = tempRoot('resign-refuse')
+    const pack = await makePack(root)
+    const keyA = generateKeypair(root)
+    const { buffer: signedA } = await signPackBuffer(pack, { keyPath: keyA.privateKey })
+    await expect(signPackBuffer(signedA, { keyPath: keyA.privateKey })).rejects.toThrow(/already signed/)
+  })
+
+  it('replaces the signature with --force (new key identity, still verifies)', async () => {
+    const root = tempRoot('resign-force')
+    const pack = await makePack(root)
+    const keyA = generateKeypair(root)
+    const keyB = generateKeypair(root)
+    const { buffer: signedA } = await signPackBuffer(pack, { keyPath: keyA.privateKey, signer: 'alice' })
+    const { buffer: signedB, signature } = await signPackBuffer(signedA, {
+      keyPath: keyB.privateKey, signer: 'bob', force: true,
+    })
+    expect(signature.keyId).toBe(keyB.keyId)
+    expect(signature.keyId).not.toBe(keyA.keyId)
+
+    const opened = await openPack(signedB)
+    try {
+      const info = JSON.parse(readFileSync(join(opened.root, 'metadata/signature.json'), 'utf8')) as SignatureInfo
+      expect(info.keyId).toBe(keyB.keyId)
+      expect(verifySignatureValue(info, info.contentHash).ok).toBe(true)
+    } finally {
+      rmSync(opened.root, { recursive: true, force: true })
+    }
+    const report = await verifyPack(signedB, { installedDshVersion: DSH_VERSION })
+    expect(report.report.ok).toBe(true)
+    rmSync(report.root, { recursive: true, force: true })
+  })
+})
+
+describe('trust whitelist (VALID ≠ TRUSTED)', () => {
+  const originalEnv = process.env.DSH_PACK_TRUSTED_KEYS
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.DSH_PACK_TRUSTED_KEYS
+    else process.env.DSH_PACK_TRUSTED_KEYS = originalEnv
+  })
+
+  it('reports N/A without a whitelist, VERIFIED when pinned, UNTRUSTED otherwise', async () => {
+    const root = tempRoot('trust')
+    const pack = await makePack(root)
+    const key = generateKeypair(root)
+    const { buffer } = await signPackBuffer(pack, { keyPath: key.privateKey, signer: 'why-daydream' })
+
+    // no whitelist → Trust N/A (but Signature stays VALID/ok)
+    delete process.env.DSH_PACK_TRUSTED_KEYS
+    let report = await verifyPack(buffer, { installedDshVersion: DSH_VERSION })
+    let section = report.report.sections.find((s) => s.name === 'Signature')
+    expect(section?.status).toBe('ok')
+    expect(String(section?.detail)).toContain('VALID')
+    expect(String(section?.detail)).toContain('Key SHA256:')
+    expect(String(section?.detail)).toContain('Trust: N/A')
+    rmSync(report.root, { recursive: true, force: true })
+
+    // pinned fingerprint → VERIFIED
+    process.env.DSH_PACK_TRUSTED_KEYS = key.keyId
+    report = await verifyPack(buffer, { installedDshVersion: DSH_VERSION })
+    section = report.report.sections.find((s) => s.name === 'Signature')
+    expect(section?.status).toBe('ok')
+    expect(String(section?.detail)).toContain('Trust: VERIFIED')
+    rmSync(report.root, { recursive: true, force: true })
+
+    // a different fingerprint → UNTRUSTED, but the signature is STILL VALID
+    process.env.DSH_PACK_TRUSTED_KEYS = 'f'.repeat(64)
+    report = await verifyPack(buffer, { installedDshVersion: DSH_VERSION })
+    section = report.report.sections.find((s) => s.name === 'Signature')
+    expect(section?.status).toBe('ok')
+    expect(String(section?.detail)).toContain('VALID')
+    expect(String(section?.detail)).toContain('Trust: UNTRUSTED')
+    rmSync(report.root, { recursive: true, force: true })
+
+    // SHA256: display-prefix form normalizes to the same fingerprint
+    process.env.DSH_PACK_TRUSTED_KEYS = `SHA256:${key.keyId}`
+    report = await verifyPack(buffer, { installedDshVersion: DSH_VERSION })
+    section = report.report.sections.find((s) => s.name === 'Signature')
+    expect(section?.status).toBe('ok')
+    expect(String(section?.detail)).toContain('Trust: VERIFIED')
+    rmSync(report.root, { recursive: true, force: true })
   })
 })
 
@@ -205,5 +299,30 @@ describe('service-level sign → verify', () => {
     expect(section?.status).toBe('ok')
     expect(String(section?.detail)).toContain('VALID')
     expect(String(section?.detail)).toContain('why-daydream')
+  })
+
+  it('wires --require-signature through the service (E2E regression)', async () => {
+    const home = tempRoot('svc-req')
+    mkdirSync(join(home, 'profiles', 'web'), { recursive: true })
+    writeFileSync(join(home, 'profiles', 'web', 'package.json'), JSON.stringify({
+      name: 'web-profile', private: true, version: '0.0.0', dependencies: {}, dsh: { profile: { bundles: [] } },
+    }, null, 2))
+    writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), '- insert:\n    - id: llm-deepseek\n      provider: deepseek\n      config:\n        temperature: 0.3\n')
+
+    const packager = new DefaultPackager({ home, installedDshVersion: DSH_VERSION, packagerVersion: '0.3.0' })
+    const packed = await packager.pack({ profile: 'web', outDir: home })
+
+    // unsigned + requireSignature → FAIL via DefaultPackager.verify (the CLI
+    // E2E caught this option not being forwarded to verifyPack)
+    const unsigned = await packager.verify(packed.file, { requireSignature: true })
+    expect(unsigned.ok).toBe(false)
+    const unsignedSection = unsigned.sections.find((s) => s.name === 'Signature')
+    expect(unsignedSection?.status).toBe('fail')
+
+    // signed + requireSignature → PASS
+    const key = await packager.keygen({ outDir: home })
+    const signed = await packager.sign(packed.file, { key: key.privateKey })
+    const verified = await packager.verify(signed.file, { requireSignature: true })
+    expect(verified.ok).toBe(true)
   })
 })

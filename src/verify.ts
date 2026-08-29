@@ -157,20 +157,31 @@ export async function verifyPack(buffer: Buffer, context: VerifyContext): Promis
         if (!verdict.ok) {
           fail('Signature', verdict.error)
         } else {
-          const detailParts = [`VALID (ed25519 keyId ${verdict.keyId.slice(0, 12)}…)`]
+          // VALID ≠ TRUSTED: a valid signature only proves the private-key
+          // holder signed the anchor; VERIFIED additionally requires the
+          // keyId (cryptographic fingerprint, not the --signer label) to be
+          // in the local trust whitelist.
+          const detailParts = [`VALID (ed25519, Key SHA256:${verdict.keyId.slice(0, 12)}…)`]
           if (existsSync(provenancePath)) {
             try {
-              const provenance = JSON.parse(readFileSync(provenancePath, 'utf8')) as { signer?: string }
-              if (typeof provenance.signer === 'string' && provenance.signer !== '') {
-                detailParts.push(`signer ${provenance.signer}`)
+              const provenance = JSON.parse(readFileSync(provenancePath, 'utf8')) as {
+                signing?: { signer?: string }
+              }
+              const signer = provenance.signing?.signer
+              if (typeof signer === 'string' && signer !== '') {
+                detailParts.push(`signer ${signer}`)
               }
             } catch {
               detailParts.push('(provenance.json unreadable)')
             }
           }
+          // Whitelist entries are fingerprints (keyId); accept an optional
+          // `SHA256:` display prefix and normalize.
           const trusted = (process.env.DSH_PACK_TRUSTED_KEYS ?? '')
-            .split(',').map((s) => s.trim()).filter(Boolean)
-          if (trusted.length > 0) {
+            .split(',').map((s) => s.trim().replace(/^SHA256:/i, '')).filter(Boolean)
+          if (trusted.length === 0) {
+            detailParts.push('Trust: N/A (no DSH_PACK_TRUSTED_KEYS whitelist)')
+          } else {
             detailParts.push(trusted.includes(verdict.keyId) ? 'Trust: VERIFIED' : 'Trust: UNTRUSTED')
           }
           ok('Signature', detailParts.join(', '))

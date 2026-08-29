@@ -225,7 +225,7 @@ export async function runCommand(invocation: ParsedInvocation, packager: Package
         const file = invocation.positionals[0]
         const key = typeof invocation.flags['key'] === 'string' ? invocation.flags['key'] : undefined
         if (file === undefined || key === undefined) {
-          return { kind: 'error', text: '✗ usage: /pack sign <file.dshpack> --key <private.pem> [--signer <name>] [--out <dir>]' }
+          return { kind: 'error', text: '✗ usage: /pack sign <file.dshpack> --key <private.pem> [--signer <name>] [--out <dir>] [--force]' }
         }
         const signer = typeof invocation.flags['signer'] === 'string' ? invocation.flags['signer'] : undefined
         const outDir = typeof invocation.flags['out'] === 'string' ? invocation.flags['out'] : undefined
@@ -233,12 +233,13 @@ export async function runCommand(invocation: ParsedInvocation, packager: Package
           key,
           ...(signer !== undefined ? { signer } : {}),
           ...(outDir !== undefined ? { outDir } : {}),
+          force: invocation.flags['force'] === true,
         })
         const lines = [
           `✓ signed: ${result.file}`,
-          `  keyId: ${result.keyId}`,
+          `  Key fingerprint: SHA256:${result.keyId}`,
           `  contentHash: ${result.contentHash}`,
-          ...(result.signer !== undefined ? [`  signer: ${result.signer}`] : []),
+          ...(result.signer !== undefined ? [`  signer: ${result.signer} (display label only — trust identity is the fingerprint)`] : []),
         ]
         return { kind: 'success', text: lines.join('\n') }
       }
@@ -247,7 +248,7 @@ export async function runCommand(invocation: ParsedInvocation, packager: Package
         const result = await packager.keygen(outDir !== undefined ? { outDir } : {})
         return {
           kind: 'success',
-          text: `✓ ed25519 keypair generated\n  keyId: ${result.keyId}\n  private: ${result.privateKey} (chmod 600)\n  public:  ${result.publicKey}`,
+          text: `✓ ed25519 keypair generated\n  Key fingerprint: SHA256:${result.keyId}\n  private: ${result.privateKey} (chmod 600)\n  public:  ${result.publicKey}`,
         }
       }
     }

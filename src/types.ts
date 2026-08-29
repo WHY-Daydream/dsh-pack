@@ -206,6 +206,8 @@ export interface SignOptions {
   signer?: string
   /** Output directory (default: alongside the input). */
   outDir?: string
+  /** Replace an existing signature on an already-signed pack (default false). */
+  force?: boolean
 }
 
 /** Result of `/pack sign`. */

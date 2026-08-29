@@ -1,0 +1,6 @@
+# dsh-pack bundle patch: inserts the pack service row into the profile tree.
+# The pack plugin registers Human Commands (/pack, /pack inspect, /pack verify,
+# /pack install) and the ctx.packager service seam (DESIGN.md Appendix A).
+- insert:
+    - id: dsh-pack
+      name: '@why-daydream/dsh-pack'

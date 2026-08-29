@@ -1,0 +1,61 @@
+{
+  "name": "@why-daydream/dsh-pack",
+  "description": "Portable, reproducible and safe DSH profiles: pack a runnable DSH Profile into a verifiable .dshpack (pack / inspect / verify / install)",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WHY-Daydream/dsh-pack.git"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml",
+    "lib/**/*.d.ts"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -b tsconfig.build.json --pretty false",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "oxlint ."
+  },
+  "dependencies": {
+    "tar": "^7.4.3",
+    "yaml": "^2.8.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.1",
+    "@deepseek-ai/dsh-app-boot": ">=0.1.0-rc.5"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "link:../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/cordis-plugin-include": "link:../deepseek-harness/vendor/include",
+    "@deepseek-ai/cordis-plugin-loader": "link:../deepseek-harness/vendor/loader",
+    "@deepseek-ai/dsh-app-boot": "link:../deepseek-harness/packages/boot/app-boot",
+    "@deepseek-ai/dsh-commands": "link:../deepseek-harness/packages/interaction/commands",
+    "@deepseek-ai/dsh-home-paths": "link:../deepseek-harness/packages/util/home-paths",
+    "@types/node": "^22.0.0",
+    "oxlint": "^0.16.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

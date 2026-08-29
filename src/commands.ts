@@ -7,13 +7,14 @@
  */
 
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+import type { DefaultImageService } from './image/service.ts'
 import type { PackagerService } from './service.ts'
 import { PackError } from './service.ts'
 import type { PackDiff, PackOptions } from './types.ts'
 
 /** A parsed /pack invocation. */
 export interface ParsedInvocation {
-  sub: 'pack' | 'inspect' | 'verify' | 'install' | 'diff' | 'sign' | 'keygen'
+  sub: 'pack' | 'inspect' | 'verify' | 'install' | 'diff' | 'sign' | 'keygen' | 'image' | 'run'
   positionals: string[]
   flags: Record<string, string | boolean>
 }
@@ -23,14 +24,16 @@ export function parseCommand(rawInput: string): ParsedInvocation {
   const tokens = rawInput.trim().split(/\s+/).filter(Boolean)
   let sub: ParsedInvocation['sub'] = 'pack'
   if (tokens[0] === 'inspect' || tokens[0] === 'verify' || tokens[0] === 'install'
-    || tokens[0] === 'diff' || tokens[0] === 'sign' || tokens[0] === 'keygen') {
+    || tokens[0] === 'diff' || tokens[0] === 'sign' || tokens[0] === 'keygen'
+    || tokens[0] === 'image' || tokens[0] === 'run') {
     sub = tokens[0]
     tokens.shift()
   }
   const positionals: string[] = []
   const flags: Record<string, string | boolean> = {}
   const boolFlags = new Set([
-    'strict', 'allow-secrets', 'allow-nonportable', 'force', 'ignore-runtime-version', 'json', 'portable', 'require-signature',
+    'strict', 'allow-secrets', 'allow-nonportable', 'force', 'ignore-runtime-version', 'json', 'portable',
+    'require-signature', 'require-trusted',
   ])
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i] as string
@@ -149,7 +152,11 @@ function renderDiff(diff: PackDiff): string {
 }
 
 /** Dispatch a parsed invocation against the packager service. */
-export async function runCommand(invocation: ParsedInvocation, packager: PackagerService): Promise<CommandResult> {
+export async function runCommand(
+  invocation: ParsedInvocation,
+  packager: PackagerService,
+  images?: DefaultImageService,
+): Promise<CommandResult> {
   try {
     switch (invocation.sub) {
       case 'pack': {
@@ -251,16 +258,96 @@ export async function runCommand(invocation: ParsedInvocation, packager: Package
           text: `✓ ed25519 keypair generated\n  Key fingerprint: SHA256:${result.keyId}\n  private: ${result.privateKey} (chmod 600)\n  public:  ${result.publicKey}`,
         }
       }
+      case 'image': {
+        if (images === undefined) return { kind: 'error', text: '✗ image commands unavailable (image service not provided)' }
+        const imageSub = invocation.positionals[0]
+        const args = invocation.positionals.slice(1)
+        switch (imageSub) {
+          case 'import': {
+            const file = args[0]
+            if (file === undefined) return { kind: 'error', text: '✗ usage: /pack image import <file.dshpack> [--tag <ref>]' }
+            const tag = typeof invocation.flags['tag'] === 'string' ? invocation.flags['tag'] : undefined
+            const result = await images.import(file, tag !== undefined ? { tag } : {})
+            const lines = [`✓ imported ${file}`, `  digest: ${result.digest}`, `  manifest: ${result.manifestDigest}`]
+            if (result.ref !== undefined) lines.push(`  tagged: ${result.ref}`)
+            return { kind: 'success', text: lines.join('\n') }
+          }
+          case 'ls': {
+            const entries = await images.list()
+            if (entries.length === 0) return { kind: 'success', text: 'REPOSITORY   TAG   DIGEST\n(no images)' }
+            const rows = entries.map((e) => `${e.repo.padEnd(24)} ${e.tag.padEnd(12)} ${shortHash(e.manifestDigest)}`)
+            return { kind: 'success', text: ['REPOSITORY                   TAG          DIGEST', ...rows].join('\n') }
+          }
+          case 'inspect': {
+            const ref = args[0]
+            if (ref === undefined) return { kind: 'error', text: '✗ usage: /pack image inspect <ref> [--json]' }
+            const info = await images.inspect(ref)
+            if (invocation.flags['json'] === true) return { kind: 'success', text: JSON.stringify(info, null, 2) }
+            const lines = [
+              `Image: ${info.ref}`,
+              `  manifest: ${info.manifestDigest}`,
+              `  artifact: ${info.artifactDigest} (${info.artifactSize} bytes)`,
+              `  configHash: ${info.configHash}`,
+              `  platform: dsh ${info.manifest.platform.dshVersion}`,
+              `  signature: ${info.signature}`,
+              `  trust: ${info.trust}`,
+            ]
+            return { kind: 'success', text: lines.join('\n') }
+          }
+          case 'tag': {
+            const source = args[0]
+            const target = args[1]
+            if (source === undefined || target === undefined) {
+              return { kind: 'error', text: '✗ usage: /pack image tag <src> <dst>' }
+            }
+            const applied = await images.tag(source, target)
+            return { kind: 'success', text: `✓ ${applied}` }
+          }
+          case 'rm': {
+            const ref = args[0]
+            if (ref === undefined) return { kind: 'error', text: '✗ usage: /pack image rm <ref>' }
+            await images.remove(ref)
+            return { kind: 'success', text: `✓ removed ${ref}` }
+          }
+          default:
+            return { kind: 'error', text: `✗ unknown image subcommand ${JSON.stringify(imageSub)} (import | ls | inspect | tag | rm)` }
+        }
+      }
+      case 'run': {
+        if (images === undefined) return { kind: 'error', text: '✗ run unavailable (image service not provided)' }
+        const ref = invocation.positionals[0]
+        if (ref === undefined) {
+          return { kind: 'error', text: '✗ usage: /pack run <ref> [--require-signature] [--require-trusted] [--profile <name>]' }
+        }
+        const profile = typeof invocation.flags['profile'] === 'string' ? invocation.flags['profile'] : undefined
+        const result = await images.run(ref, {
+          ...(invocation.flags['require-signature'] === true ? { requireSignature: true } : {}),
+          ...(invocation.flags['require-trusted'] === true ? { requireTrusted: true } : {}),
+          ...(profile !== undefined ? { profile } : {}),
+        })
+        const lines = [
+          `✓ ${result.temporary ? 'temporary runtime' : 'profile'} "${result.profile}" materialized (${result.dir})`,
+          `  digest: ${result.digest}`,
+          `  configHash: ${result.configHash}`,
+          `  signature: ${result.signature}`,
+          `  trust: ${result.trust}`,
+          `  boot: ${result.boot}`,
+        ]
+        return { kind: 'success', text: lines.join('\n') }
+      }
     }
   } catch (error) {
     return fail(error)
   }
 }
 
-/** Command handler bound to a packager instance. */
-export function makeHandler(packager: PackagerService): (invocation: CommandInvocation) => Promise<CommandResult> {
+/** Command handler bound to a packager + optional image service. */
+export function makeHandler(
+  packager: PackagerService,
+  images?: DefaultImageService,
+): (invocation: CommandInvocation) => Promise<CommandResult> {
   return async (invocation) => {
     const parsed = parseCommand(invocation.rawInput)
-    return runCommand(parsed, packager)
+    return runCommand(parsed, packager, images)
   }
 }

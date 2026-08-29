@@ -1,0 +1,39 @@
+# 普通 PR CI（DESIGN-v0.4.2.md §4A）：不碰真实 GHCR。
+# 覆盖：typecheck / 本地测试套件（含 mock OCI registry）/ signing CLI E2E。
+# 真实 GHCR 协议验收单独走 ghcr-e2e.yml（workflow_dispatch，D41/D43）。
+name: PR CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  # 最小权限：本 workflow 不需要 packages write（D43：fork PR 不暴露 package write）
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Enable pnpm (corepack)
+        run: corepack enable
+
+      - name: Install dependencies (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck + build (lib/)
+        run: pnpm run typecheck
+
+      - name: Test suite (103 tests, incl. mock OCI registry)
+        run: pnpm test
+
+      - name: Signing CLI E2E (real CLI path)
+        run: node scripts/signing-e2e.mjs

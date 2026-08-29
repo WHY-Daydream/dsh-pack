@@ -5,10 +5,59 @@
 
 ## [Unreleased]
 
-- **v0.4.2 规划**：trust.yaml 细粒度策略；image lock（tag → digest 固定）；
-  registry 引用计数 / GC；GHCR 真实凭据验证（CI/手动）。
+- **v0.4.2 剩余**：image lock（`/pack image lock <ref>` → 真实 manifestDigest +
+  dsh-lock.json）；trust.yaml（registries 级 requireSignature/requireTrusted/
+  trustedKeys）；local image prune（未引用 blob/manifest + 旧 runtime cache；
+  不做 Registry GC——那是 Registry Server 的职责）。
 - **v0.5 规划**：Encryption（私密插件源码 / 企业离线分发场景才需要）。
   Signing 已知边界（吊销 / 轮换 / 多签名 / 过期）同列后续。
+
+## [v0.4.2] - 2026-08-29（第一阶段：Real GHCR Protocol Acceptance）
+
+### Distribution Governance 第一阶段（D41–D45 冻结）
+
+目的：**不是再证明业务逻辑**，而是验证"我们的 OCI 客户端真的能和 GHCR
+对话"——从协议兼容升级为真实公共 OCI Registry 实证兼容。暂不实现
+image lock / trust.yaml / prune（跑通真实 GHCR 后再做，顺序见 DESIGN
+§8）。
+
+### Added
+
+- **D41–D45 冻结**（DESIGN-v0.4.2.md）：
+  - D41 Real GHCR E2E 属于协议验收，不替代 mock registry 单测（两层并存）
+  - D42 GitHub Actions 默认 `GITHUB_TOKEN`，不要求长期 PAT（本地 CLI 才用
+    PAT classic）
+  - D43 CI GHCR E2E 不在 fork PR 执行（不向不可信代码暴露 package write）
+  - D44 Real registry 成功必须 OCI integrity + DSH integrity +
+    Signature/Trust 三成兼须
+  - D45 Remote Registry credentials 永远不属于 Artifact / Provenance /
+    Image Manifest
+- **GHCR 8 项协议验收清单**（冻结入 DESIGN §3）：401+Bearer challenge /
+  token scope=pull,push / blob HEAD 404→200 / POST uploads/ → Location →
+  PUT ?digest → 201 / OCI manifest PUT Content-Type / tag pull
+  Content-Type+Docker-Content-Digest / digest pull 一致性 / DSH 层
+  contentHash+Signature+Trust+run configHash。
+- **CI 两层模型**：
+  - `.github/workflows/pr-ci.yml`：普通 PR CI（typecheck + 103 测试含
+    mock registry + signing E2E，**不碰真实 GHCR**；fork 安全，最小权限
+    `contents: read`）。
+  - `.github/workflows/ghcr-e2e.yml`：`workflow_dispatch` 手动触发（初期），
+    `packages: write` + `GITHUB_TOKEN`（job 级 env 注入，结束即消失），
+    测试 namespace `ghcr.io/<owner>/dsh-pack-e2e:run-<run_id>`（正式包
+    与测试包隔离，新 package 默认 private 正好覆盖认证 E2E）。
+- **`scripts/ghcr-e2e.mjs`**：Internet North-Star 脚本——8 项协议断言全
+  覆盖（raw probe 验证 ① 401+challenge、② token scope、⑥ Content-Type+
+  Docker-Content-Digest==bytes；服务层验证 ③④⑤⑦⑧），env 凭据，日志纪律
+  （只记 method/host/repo/status/scope，永不记 token）。缺 env 时 exit 2
+  明确退出。
+
+### 验收状态
+
+- 本地验证：`node --check` 语法 OK；lib 导入路径全部存在；本地测试套件
+  不受影响（103 全绿）。
+- **真实 GHCR 运行须在 GitHub Actions `workflow_dispatch` 执行**（需
+  `GITHUB_TOKEN` + `packages: write`，此环境无凭据不可本地运行真协议）——
+  首次运行结果待 CI 确认后回填本条目。
 
 ## [v0.4.1] - 2026-08-29
 

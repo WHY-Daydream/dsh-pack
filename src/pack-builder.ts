@@ -70,9 +70,22 @@ async function createArchive(cwd: string, fileList: string[]): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
+/**
+ * Derived-metadata files that never participate in the contentHash anchor
+ * (D17 + v0.3): checksums.json self-reference, plus the signing files
+ * signature.json / provenance.json — adding a signature must not change the
+ * signed anchor.
+ */
+export const HASH_EXCLUDED_FILES = new Set([
+  'metadata/checksums.json',
+  'metadata/signature.json',
+  'metadata/provenance.json',
+])
+
 /** contentHash = sha256 over the sorted `path:fileSha256` inventory (§7.4). */
 export function computeContentHash(files: Record<string, string>): string {
   const lines = Object.entries(files)
+    .filter(([path]) => !HASH_EXCLUDED_FILES.has(path))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([path, hash]) => `${path}:${hash}`)
   return `sha256:${sha256Hex(lines.join('\n'))}`

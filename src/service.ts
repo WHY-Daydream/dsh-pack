@@ -21,11 +21,12 @@ import { verifyPack } from './verify.ts'
 import { inspectPack } from './inspect.ts'
 import { installPack } from './install.ts'
 import { diffPacks } from './diff.ts'
+import { signPackFile, generateKeypair } from './sign.ts'
 import { loadProfileDir, resolveDshHome, resolveInstallAnchor } from './profile-reader.ts'
 import { prettyJson, todayStamp, utcNowIso } from './canonical.ts'
 import type {
-  DependencyTree, InstallOptions, InstallResult, Manifest, PackDiff, PackInspection, PackOptions,
-  PackResult, VerificationReport, Warning,
+  DependencyTree, InstallOptions, InstallResult, KeygenResult, Manifest, PackDiff, PackInspection,
+  PackOptions, PackResult, SignOptions, SignResult, VerificationReport, Warning,
 } from './types.ts'
 
 const execFileAsync = promisify(execFile)
@@ -42,10 +43,14 @@ export class PackError extends Error {
 export interface PackagerService {
   pack(opts: PackOptions): Promise<PackResult>
   inspect(file: string): Promise<PackInspection>
-  verify(file: string, opts?: { ignoreRuntimeVersion?: boolean }): Promise<VerificationReport>
+  verify(file: string, opts?: { ignoreRuntimeVersion?: boolean; requireSignature?: boolean }): Promise<VerificationReport>
   install(file: string, opts: InstallOptions): Promise<InstallResult>
   /** v0.2: drift report between two packs. */
   diff(fileA: string, fileB: string): Promise<PackDiff>
+  /** v0.3: embed an ed25519 signature + provenance into a copy of the pack. */
+  sign(file: string, opts: SignOptions): Promise<SignResult>
+  /** v0.3: generate an ed25519 keypair. */
+  keygen(opts: { outDir?: string }): Promise<KeygenResult>
 }
 
 export interface PackagerContext {
@@ -241,12 +246,14 @@ export class DefaultPackager implements PackagerService {
     return { ...inspection, file }
   }
 
-  async verify(file: string, opts?: { ignoreRuntimeVersion?: boolean }): Promise<VerificationReport> {
+  async verify(file: string, opts?: { ignoreRuntimeVersion?: boolean; requireSignature?: boolean }): Promise<VerificationReport> {
     const buffer = readFileSync(file)
     const installedDshVersion = this.installedDshVersion()
-    const { report, root } = opts?.ignoreRuntimeVersion === true
-      ? await verifyPack(buffer, { installedDshVersion, ignoreRuntimeVersion: true })
-      : await verifyPack(buffer, { installedDshVersion })
+    const { report, root } = await verifyPack(buffer, {
+      installedDshVersion,
+      ...(opts?.ignoreRuntimeVersion === true ? { ignoreRuntimeVersion: true } : {}),
+      ...(opts?.requireSignature === true ? { requireSignature: true } : {}),
+    })
     rmSync(root, { recursive: true, force: true })
     return report
   }
@@ -264,6 +271,15 @@ export class DefaultPackager implements PackagerService {
   async diff(fileA: string, fileB: string): Promise<PackDiff> {
     const payload = await diffPacks(readFileSync(fileA), readFileSync(fileB))
     return { ...payload, fileA, fileB }
+  }
+
+  async sign(file: string, opts: SignOptions): Promise<SignResult> {
+    return signPackFile(file, { ...opts })
+  }
+
+  async keygen(opts: { outDir?: string }): Promise<KeygenResult> {
+    const { keyId, privateKey, publicKey } = generateKeypair(opts.outDir ?? process.cwd())
+    return { keyId, privateKey, publicKey }
   }
 }
 

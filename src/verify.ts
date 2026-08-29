@@ -8,8 +8,9 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { computeContentHash, extractTarGz } from './pack-builder.ts'
+import { collectFiles, computeContentHash, extractTarGz } from './pack-builder.ts'
 import { bundleIdentities, computeConfigHash, validateManifest } from './manifest.ts'
+import { verifySignatureValue } from './sign.ts'
 import { sha256Hex } from './canonical.ts'
 import type { DependencyTree, Manifest, VerificationReport, VerificationSection } from './types.ts'
 
@@ -18,6 +19,8 @@ export interface VerifyContext {
   installedDshVersion: string
   /** Skip the exact runtime version match (D15). */
   ignoreRuntimeVersion?: boolean
+  /** v0.3: unsigned packs fail the Signature section. */
+  requireSignature?: boolean
 }
 
 export interface VerifyOutcome {
@@ -122,6 +125,68 @@ export async function verifyPack(buffer: Buffer, context: VerifyContext): Promis
       fail('DSH Version', `pack built for dsh ${parsed.manifest.runtime.dshVersion}, installed is ${context.installedDshVersion}`)
     } else {
       ok('DSH Version', `dsh ${parsed.manifest.runtime.dshVersion} exact match`)
+    }
+
+    // --- signature (v0.3 embedded ed25519 over the contentHash anchor) ---
+    const signaturePath = join(root, 'metadata/signature.json')
+    const provenancePath = join(root, 'metadata/provenance.json')
+    if (!existsSync(signaturePath)) {
+      if (context.requireSignature) {
+        fail('Signature', 'unsigned pack (--require-signature)')
+      } else {
+        sections.push({ name: 'Signature', status: 'warn', detail: 'unsigned pack' })
+      }
+    } else {
+      let signature: unknown
+      try {
+        signature = JSON.parse(readFileSync(signaturePath, 'utf8'))
+      } catch {
+        fail('Signature', 'metadata/signature.json is not valid JSON')
+        signature = undefined
+      }
+      if (signature !== undefined) {
+        // Anchor from ACTUAL file bytes (never the declared checksums map):
+        // the signature must fail on any content tampering even if the
+        // attacker also rewrote checksums.json (defense in depth).
+        const actualHashes: Record<string, string> = {}
+        for (const file of collectFiles(root)) {
+          actualHashes[file] = sha256Hex(readFileSync(join(root, file)))
+        }
+        const anchor = computeContentHash(actualHashes)
+        const verdict = verifySignatureValue(signature, anchor)
+        if (!verdict.ok) {
+          fail('Signature', verdict.error)
+        } else {
+          // VALID ≠ TRUSTED: a valid signature only proves the private-key
+          // holder signed the anchor; VERIFIED additionally requires the
+          // keyId (cryptographic fingerprint, not the --signer label) to be
+          // in the local trust whitelist.
+          const detailParts = [`VALID (ed25519, Key SHA256:${verdict.keyId.slice(0, 12)}…)`]
+          if (existsSync(provenancePath)) {
+            try {
+              const provenance = JSON.parse(readFileSync(provenancePath, 'utf8')) as {
+                signing?: { signer?: string }
+              }
+              const signer = provenance.signing?.signer
+              if (typeof signer === 'string' && signer !== '') {
+                detailParts.push(`signer ${signer}`)
+              }
+            } catch {
+              detailParts.push('(provenance.json unreadable)')
+            }
+          }
+          // Whitelist entries are fingerprints (keyId); accept an optional
+          // `SHA256:` display prefix and normalize.
+          const trusted = (process.env.DSH_PACK_TRUSTED_KEYS ?? '')
+            .split(',').map((s) => s.trim().replace(/^SHA256:/i, '')).filter(Boolean)
+          if (trusted.length === 0) {
+            detailParts.push('Trust: N/A (no DSH_PACK_TRUSTED_KEYS whitelist)')
+          } else {
+            detailParts.push(trusted.includes(verdict.keyId) ? 'Trust: VERIFIED' : 'Trust: UNTRUSTED')
+          }
+          ok('Signature', detailParts.join(', '))
+        }
+      }
     }
   }
 

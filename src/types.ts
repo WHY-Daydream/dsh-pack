@@ -182,3 +182,45 @@ export interface PackDiff {
   configHashB: string
   configHashEqual: boolean
 }
+
+/** v0.3 embedded ed25519 signature (`metadata/signature.json`). */
+export interface SignatureInfo {
+  schemaVersion: 1
+  algorithm: 'ed25519'
+  /** sha256 of the public key DER (SPKI) — display + trust allowlist. */
+  keyId: string
+  /** Public key PEM (SPKI) — self-contained verification. */
+  publicKey: string
+  /** The signed integrity anchor (contentHash string). */
+  contentHash: string
+  /** base64 ed25519 signature over `contentHash`. */
+  signature: string
+  createdAt: string
+}
+
+/** Options for `/pack sign` (v0.3). */
+export interface SignOptions {
+  /** Path to the private key PEM (pkcs8). */
+  key: string
+  /** Optional human-readable signer identity for provenance.json. */
+  signer?: string
+  /** Output directory (default: alongside the input). */
+  outDir?: string
+  /** Replace an existing signature on an already-signed pack (default false). */
+  force?: boolean
+}
+
+/** Result of `/pack sign`. */
+export interface SignResult {
+  file: string
+  keyId: string
+  contentHash: string
+  signer?: string
+}
+
+/** Result of `/pack keygen`. */
+export interface KeygenResult {
+  privateKey: string
+  publicKey: string
+  keyId: string
+}

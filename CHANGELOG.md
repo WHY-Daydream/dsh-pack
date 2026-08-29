@@ -5,8 +5,56 @@
 
 ## [Unreleased]
 
-- **v0.3 规划**：Signing / Provenance / Trust（ed25519 包签名、发布者身份、信任策略）。
-  协议设计见 `DESIGN.md` Appendix E（`v0.3-signing` 分支）。
+- **v0.4 规划**：Agent Image / Distribution Model（`.dshpack` 如何成为正式发布单元：
+  `dsh push/pull/run`），随后 v0.5 Encryption（私密插件源码 / 企业离线分发场景才需要）。
+  Signing 已知边界（吊销 / 轮换 / 多签名 / 过期）同列后续。
+
+## [v0.3.0] - 2026-08-29
+
+### Trusted Artifact：嵌入式 ed25519 签名（Signing / Provenance / Trust）
+
+定位演进：v0.1 可验证快照 → v0.2 可移植 Artifact → **v0.3 可信 Artifact**——
+回答"这个包是谁做的、有没有被篡改、能否信任"。
+
+### Added
+
+- **`/pack keygen`**：生成 ed25519 密钥对（私钥 `dsh-pack-private.pem` chmod 0600 +
+  公钥 + `Key fingerprint: SHA256:<keyId>`；keyId = 公钥 SPKI DER 的 sha256）。
+- **`/pack sign <file> --key <pem> [--signer <name>] [--force]`**：确定性重建包，嵌入
+  `metadata/signature.json`（自包含验签：公钥内嵌，被签对象 = contentHash 锚点字符串）+
+  `metadata/provenance.json`（Artifact → Build → Signer 轻量来源），产出
+  `<name>.signed.dshpack`（原包不覆盖）。
+- **verify 新增 Signature 分节**：锚点取**实际文件字节重算**的 contentHash（纵深防御，
+  防 checksums.json 被一并改写）；`--require-signature` 强制签名（缺失 FAIL）；
+  `DSH_PACK_TRUSTED_KEYS` 白名单 → `Trust: VERIFIED / UNTRUSTED / N/A` 三态。
+- **contentHash 排除集扩展（D17 扩展）**：checksums.json + signature.json +
+  provenance.json 均不参与完整性锚——加签名不改变被签值，sign-then-embed 保持有效。
+
+### 安全语义（冻结，DESIGN.md D18/D19）
+
+- **VALID ≠ TRUSTED（D19）**：`Signature VALID` 只证明"对应私钥持有者签过该锚点"；
+  `Trust VERIFIED` 才代表"该指纹在本地信任白名单内"。两者严格分离——CLI E2E 有专项
+  断言：untrusted 指纹下 Signature 仍 VALID。
+- **signer 不是信任根**：`--signer` 只是显示标签（display metadata），绝不参与 Trust
+  判定；密码学身份一律来自 public key fingerprint（keyId）。
+- **re-sign 显式破坏（D18）**：已签包再次 `/pack sign` 默认 FAIL（exit 1）；
+  `--force` 显式替换——防止"官方签名包被任意重签覆盖"（与 install `--force` 同原则）。
+
+### 工程笔记
+
+- **真实 CLI 端到端验收发现并修复 1 个 bug**：`DefaultPackager.verify` 未透传
+  `requireSignature`（单测直调 verifyPack、绕过服务层），导致
+  `/pack verify --require-signature` 对未签名包不生效。已修复并补服务级回归测试——
+  这正是"收住功能、跑真实用户路径"的价值。
+
+### 验收（2026-08-29）
+
+- 64 单测全绿（新增：re-sign 默认拒绝 + `--force` 替换、trust 三态 + `SHA256:` 前缀
+  归一化、provenance 定稿结构、require-signature 服务层回归）+ typecheck 通过
+- 真实 CLI E2E（`scripts/signing-e2e.mjs`）23 项断言全过：keygen → pack+sign →
+  verify（VALID / Trust N/A）→ trusted/untrusted（VALID≠TRUSTED）→ unsigned+require
+  → tamper（Signature INVALID）→ re-sign
+- 2 个真实 pnpm North-Star E2E（v0.1 roundtrip + --portable）无回归
 
 ## [v0.2.0] - 2026-08-29
 

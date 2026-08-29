@@ -13,7 +13,7 @@ import type { PackDiff, PackOptions } from './types.ts'
 
 /** A parsed /pack invocation. */
 export interface ParsedInvocation {
-  sub: 'pack' | 'inspect' | 'verify' | 'install' | 'diff'
+  sub: 'pack' | 'inspect' | 'verify' | 'install' | 'diff' | 'sign' | 'keygen'
   positionals: string[]
   flags: Record<string, string | boolean>
 }
@@ -22,14 +22,15 @@ export interface ParsedInvocation {
 export function parseCommand(rawInput: string): ParsedInvocation {
   const tokens = rawInput.trim().split(/\s+/).filter(Boolean)
   let sub: ParsedInvocation['sub'] = 'pack'
-  if (tokens[0] === 'inspect' || tokens[0] === 'verify' || tokens[0] === 'install' || tokens[0] === 'diff') {
+  if (tokens[0] === 'inspect' || tokens[0] === 'verify' || tokens[0] === 'install'
+    || tokens[0] === 'diff' || tokens[0] === 'sign' || tokens[0] === 'keygen') {
     sub = tokens[0]
     tokens.shift()
   }
   const positionals: string[] = []
   const flags: Record<string, string | boolean> = {}
   const boolFlags = new Set([
-    'strict', 'allow-secrets', 'allow-nonportable', 'force', 'ignore-runtime-version', 'json', 'portable',
+    'strict', 'allow-secrets', 'allow-nonportable', 'force', 'ignore-runtime-version', 'json', 'portable', 'require-signature',
   ])
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i] as string
@@ -187,8 +188,11 @@ export async function runCommand(invocation: ParsedInvocation, packager: Package
       }
       case 'verify': {
         const file = invocation.positionals[0]
-        if (file === undefined) return { kind: 'error', text: '✗ usage: /pack verify <file.dshpack> [--json] [--ignore-runtime-version]' }
-        const report = await packager.verify(file, { ignoreRuntimeVersion: invocation.flags['ignore-runtime-version'] === true })
+        if (file === undefined) return { kind: 'error', text: '✗ usage: /pack verify <file.dshpack> [--json] [--ignore-runtime-version] [--require-signature]' }
+        const report = await packager.verify(file, {
+          ignoreRuntimeVersion: invocation.flags['ignore-runtime-version'] === true,
+          requireSignature: invocation.flags['require-signature'] === true,
+        })
         return { kind: report.ok ? 'success' : 'error', text: renderVerifyReport(report, invocation.flags['json'] === true) }
       }
       case 'install': {
@@ -216,6 +220,36 @@ export async function runCommand(invocation: ParsedInvocation, packager: Package
           return { kind: 'success', text: JSON.stringify(diff, null, 2) }
         }
         return { kind: 'success', text: renderDiff(diff) }
+      }
+      case 'sign': {
+        const file = invocation.positionals[0]
+        const key = typeof invocation.flags['key'] === 'string' ? invocation.flags['key'] : undefined
+        if (file === undefined || key === undefined) {
+          return { kind: 'error', text: '✗ usage: /pack sign <file.dshpack> --key <private.pem> [--signer <name>] [--out <dir>] [--force]' }
+        }
+        const signer = typeof invocation.flags['signer'] === 'string' ? invocation.flags['signer'] : undefined
+        const outDir = typeof invocation.flags['out'] === 'string' ? invocation.flags['out'] : undefined
+        const result = await packager.sign(file, {
+          key,
+          ...(signer !== undefined ? { signer } : {}),
+          ...(outDir !== undefined ? { outDir } : {}),
+          force: invocation.flags['force'] === true,
+        })
+        const lines = [
+          `✓ signed: ${result.file}`,
+          `  Key fingerprint: SHA256:${result.keyId}`,
+          `  contentHash: ${result.contentHash}`,
+          ...(result.signer !== undefined ? [`  signer: ${result.signer} (display label only — trust identity is the fingerprint)`] : []),
+        ]
+        return { kind: 'success', text: lines.join('\n') }
+      }
+      case 'keygen': {
+        const outDir = typeof invocation.flags['out'] === 'string' ? invocation.flags['out'] : undefined
+        const result = await packager.keygen(outDir !== undefined ? { outDir } : {})
+        return {
+          kind: 'success',
+          text: `✓ ed25519 keypair generated\n  Key fingerprint: SHA256:${result.keyId}\n  private: ${result.privateKey} (chmod 600)\n  public:  ${result.publicKey}`,
+        }
       }
     }
   } catch (error) {

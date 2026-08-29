@@ -8,7 +8,7 @@
 > home 层与 `--patch` 属于 **Machine / Invocation State**，可迁移时被排除（§4.2）。
 > 这一条是本文档的顶层原则：后续所有技术选择（哈希算法、包含范围、依赖策略、安全边界）都从这里推导。
 
-- 状态：**v0.1 定稿**（2026-08-28，已并入 Conditional Review：BLOCKER D3/D7 + MUST-1~5 + D15）
+- 状态：**v0.1 定稿（2026-08-28）**；**v0.2 已实现（2026-08-29：`/pack diff` + `--portable`）**；**v0.3 Signing 已实现（2026-08-29，见 Appendix E）**；首个公开 Git 版本 `v0.2.0`（2026-08-29，v0.1 为仓库初始化前开发，不伪造 v0.1.0 tag）
 - 关联仓库：`@why-daydream/dsh-pack`（本设计对应独立插件仓库，与 `dsh-chaos` 同构）
 - 依赖的 DSH 官方机制（均已核实）：
   - Profile 组合层序：`apps/cli/src/profile-boot.ts`（bundles 按 `dsh.profile.bundles` 序 → profile `cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `--patch`）
@@ -100,8 +100,10 @@ web-20260828.dshpack
 │   └── .env.example           MUST（有 redact 时）；否则可选
 │
 ├── metadata/
-│   ├── checksums.json         MUST    逐文件 sha256 + contentHash
-│   └── warnings.json          MUST    告警清单（可为空数组）
+│   ├── checksums.json     MUST    逐文件 sha256 + contentHash
+│   ├── warnings.json      MUST    告警清单（可为空数组）
+│   ├── signature.json     OPT     v0.3 签名：ed25519 签名 + 公钥 + keyId（/pack sign 时存在）
+│   └── provenance.json    OPT     v0.3 来源：signer / tool / createdAt（/pack sign 时存在）
 │
 └── README.md                  MUST    人类可读的包说明（自动生成）
 ```
@@ -402,7 +404,7 @@ configHash = "sha256:" + hex(
 
 `contentHash` = `sha256( 排序后的 "path:fileSha256" 逐行拼接 )`。
 
-- **自引用处理（Review 点，方案 B）**：`files` 映射**不含 `checksums.json` 自身**；verify 时从其余成员重算全部文件哈希并与 `files` 逐项比对，再重算 `contentHash` 比对——checksums.json 由其他文件确定性派生，无需自校验。
+- **自引用处理（Review 点，方案 B）+ v0.3 扩展**：`files` 映射**不含 `checksums.json` 自身**；**contentHash 计算排除三个派生元数据文件**——`metadata/checksums.json`、`metadata/signature.json`、`metadata/provenance.json`（D17 同原则：签名/校验文件不进完整性锚，`/pack sign` 加签名不改变被签锚点）；verify 时从其余成员重算全部文件哈希并与 `files` 逐项比对，再重算 `contentHash` 比对。
 
 ### 7.5 verify 规则（冻结）
 
@@ -414,8 +416,9 @@ configHash = "sha256:" + hex(
 | Checksums | 逐文件 sha256 == checksums.json；contentHash 一致 | FAIL |
 | DSH Version | manifest.runtime.dshVersion 与安装的 dsh **精确匹配**（v0.1 不做 `^0.x` semver 范围，DSH 仍为 Developer Preview，可能 breaking） | FAIL（install 默认拒绝；`--ignore-runtime-version` 显式放行） |
 | Redaction | `secrets.redacted` 与 warnings.json 记录一致；包内无高置信 secret 残留 | FAIL |
+| Signature | v0.3：存在 `metadata/signature.json` 则校验（schema、keyId、锚点 = **实际文件字节重算的 contentHash**、ed25519 验签）；缺失 → WARN，`--require-signature` 下 FAIL；`DSH_PACK_TRUSTED_KEYS`（逗号分隔 keyId）设置时追加 Trust: VERIFIED/UNTRUSTED | FAIL（签名无效 / require 时缺失） |
 
-verify 输出分节：`Manifest / Config / Packages / Checksums / DSH Version`，全部 OK → 退出码 0；任一 FAIL → 非零（退出码 2）；WARN 不影响退出码。
+verify 输出分节：`Manifest / Config / Packages / Checksums / DSH Version / Signature`，全部 OK → 退出码 0；任一 FAIL → 非零（退出码 2）；WARN 不影响退出码。
 
 ### 7.6 Deterministic Pack 声明
 
@@ -435,8 +438,10 @@ verify 输出分节：`Manifest / Config / Packages / Checksums / DSH Version`�
 | `/pack install <file>` | 恢复到 `$DSH_HOME/profiles/<name>` | `--profile <name>`、`--force` |
 | `/pack diff <a> <b>` | 两包配置漂移对比（v0.2 已实现：4 域 + configHash 判定） | `--json` |
 | `/pack <name> --portable` | 连本地 `file:`/`link:` 依赖一起 vendoring 打包（v0.2 已实现） | `--out <dir>` 等同上 |
+| `/pack keygen [--out <dir>]` | 生成 ed25519 密钥对（v0.3 已实现：`dsh-pack-private.pem` chmod 600 + `dsh-pack-public.pem` + keyId） | `--out` |
+| `/pack sign <file> --key <pem> [--signer <name>] [--out <dir>]` | 嵌入签名 + provenance，产出 `<name>.signed.dshpack`（v0.3 已实现） | `--key` 必填 |
 
-命令名 `pack` 满足官方注册约束（`^[a-z][a-z0-9_-]*$`）。v0.2 追加：`/pack <name> --portable`（**已实现，2026-08-29**）、`/pack diff <a> <b>`（**已实现，2026-08-29**）。
+命令名 `pack` 满足官方注册约束（`^[a-z][a-z0-9_-]*$`）。v0.2 追加：`/pack <name> --portable`、`/pack diff <a> <b>`（**已实现，2026-08-29**）；v0.3 追加：`/pack keygen`、`/pack sign`、`/pack verify --require-signature`（**已实现，2026-08-29**）。
 
 ### 8.2 输出约定
 
@@ -570,7 +575,7 @@ tests/                    单元 + E2E（vitest）
 |------|------|
 | **v0.1** | light pack（pack / inspect / verify / install）、secret redaction、configHash、确定性归档、frozen-lockfile install、原子 staging 安装、archive 提取安全。**2026-08-29 封版**（Review 无 blocker + North-Star E2E PASS，见 Appendix D） |
 | **v0.2** | `--portable`（**已实现 2026-08-29**：`src/portable.ts` 本地依赖图 DFS 闭包（含 cycle 检测）→ `pnpm pack` 式确定性 tgz vendoring（`package/` 前缀 + mtime=0）→ 传递 spec 重写（`file:/link:` → `file:vendor/<tgz>`）→ lockfile 目录形态→tarball 形态重写（importer + `packages:` 键 + `snapshots:` 值，覆盖声明形式与 pnpm 项目相对形式）；manifest 新增可选 `packages` 字段（§3.4 minor 扩展）；verify Packages 分节支持 vendored tgz；North-Star E2E：pack --portable → 干净 home frozen install → install 侧 configHash == manifest 一致）。`/pack diff`（**已实现 2026-08-29**：Manifest/Bundles/Config/Dependencies 4 域 + configHash 判定，`src/diff.ts` + `tests/diff.spec.ts`） |
-| **v0.3** | 包签名（ed25519）、secrets 加密支持、对接 DSH credentials 注入、`dsh pull/run` Agent Image 实验（Profile → .dshpack → Agent Runtime 的 OCI 类似物） |
+| **v0.3** | **Signing 已实现 2026-08-29**（embedded ed25519：`/pack keygen` + `/pack sign` + verify Signature 分节 + `DSH_PACK_TRUSTED_KEYS` 信任白名单，见 Appendix E）；剩余：secrets 加密支持、对接 DSH credentials 注入、`dsh pull/run` Agent Image 实验（Profile → .dshpack → Agent Runtime 的 OCI 类似物） |
 | 长期 | Registry / Cloud / UI（明确不做） |
 
 ---
@@ -596,6 +601,8 @@ tests/                    单元 + E2E（vitest）
 | D15 | **Runtime 精确版本匹配**：install 时 dshVersion 不一致默认 FAIL，`--ignore-runtime-version` 放行（v0.1 不做 `^0.x` semver 范围） | §7.5, §8.4 | DSH 为 Developer Preview，防 breaking |
 | D16 | **Archive 提取安全**：路径归一化必须留在 staging root 内；禁止 symlink/hardlink/device/FIFO 条目 | §8.4 | 防恶意包路径逃逸 |
 | D17 | **contentHash 无自引用**：checksums.json 不入 files 映射，verify 重算比对 | §7.4 | 哈希与归档互不依赖 |
+| D18 | **re-sign 显式破坏**：已签包再 `/pack sign` 默认 FAIL，`--force` 显式替换（防官方签名被任意重签覆盖） | §8.1, Appendix E.2/E.4 | 与 install `--force`（D13）同原则 |
+| D19 | **VALID ≠ TRUSTED**：签名有效 ≠ 信任；Trust 判定只基于 keyId（指纹），`--signer` 仅为显示标签 | Appendix E.3/E.4 | 密码学身份与显示身份严格分离 |
 
 ---
 
@@ -614,6 +621,49 @@ tests/                    单元 + E2E（vitest）
 补测试：`tests/service.spec.ts`（D7 默认 fail / `--allow-nonportable` → `installable:false`+`portable:false` / tarball 保持 portable；D15 verify 分节 fail + install 拒绝 + `--ignore-runtime-version` 放行）、`tests/dependency-resolver.spec.ts`（MUST-2 packages 键与 scoped 变体重写）、`tests/secret-scanner.spec.ts`（F4 dotted-key 用例）。
 
 **Release Gate（2026-08-29）**：Review 无未关闭 blocker + 38 单测通过 + typecheck 通过 + North-Star E2E 判据①（vitest roundtrip configHash 相等）与判据②（`scripts/clean-room-e2e.mjs`：真实 dsh CLI `--dump-config` 归一化一致 + install 侧 configHash == manifest.configHash）全部 PASS → **v0.1 封版判定成立**（package.json `0.1.0`；仓库尚未 git init，打 tag 待用户操作）。
+
+## Appendix E. v0.3 签名定稿（2026-08-29）
+
+**定位**：Integrity → Authenticity → Provenance。`.dshpack` 已解决"能否复现/安装/内容是否被改"；v0.3 回答"**谁打的包，能否信任**"。
+
+### E.1 签名格式（embedded ed25519）
+
+- 算法：**ed25519**（Node crypto 原生，`sign(null, data, key)` / `verify(null, data, key, sig)`）。
+- 文件（`/pack sign` 时写入包内 `metadata/`）：
+  - `signature.json`：`{ schemaVersion: 1, algorithm: "ed25519", keyId, publicKey, contentHash, signature, createdAt }`——**自包含验签**（公钥内嵌，PEM spki）；`keyId` = 公钥 DER（spki）的 sha256（64 hex）。
+  - `provenance.json`：`{ schemaVersion: 1, artifact: { contentHash }, signing: { algorithm, keyId, signer }, build: { dshPackVersion, dshVersion, nodeVersion, pnpmVersion }, createdAt }`——轻量来源，把 **Artifact → Build → Signer** 连起来（v0.3 不上 SLSA/Sigstore，v0.4+ 再说）。
+- **被签对象 = contentHash 字符串**（非 archive 字节）：contentHash 是覆盖全部真实条目的完整性锚；签名文件与 checksums.json 一样属于**派生元数据，不参与 contentHash**（D17 扩展：排除集 = checksums.json + signature.json + provenance.json）→ `sign` 加签名**不改变**被签锚点 → sign-then-embed 保持有效。
+- **确定性重建**：`sign` 从原包提取 → 追加两个元数据文件 → 重新生成 checksums.json → 确定性 tar.gz（排序/mtime=0）→ 产出 `<name>.signed.dshpack`（原包不覆盖）。
+
+### E.2 命令面
+
+| 命令 | 行为 |
+|------|------|
+| `/pack keygen [--out <dir>]` | 生成 ed25519 密钥对：`dsh-pack-private.pem`（**chmod 0600**）+ `dsh-pack-public.pem`，打印 `Key fingerprint: SHA256:<keyId>` |
+| `/pack sign <file> --key <pem> [--signer <name>] [--out <dir>] [--force]` | 嵌入签名 + provenance，产出 `<name>.signed.dshpack`；**已签包默认拒绝（D18），`--force` 显式替换** |
+| `/pack verify <file> [--require-signature]` | Signature 分节；`--require-signature` 时未签名包 FAIL |
+
+### E.3 verify Signature 分节（冻结）
+
+- 缺失 `signature.json` → **WARN**（`--require-signature` 下 **FAIL**）。
+- 存在则校验：schema（schemaVersion=1 / algorithm=ed25519 / keyId 64 hex / 公钥可解析）→ **锚点 = 实际文件字节重算的 contentHash**（绝不使用 checksums.json 声明的哈希——即使攻击者同时重写了 checksums.json，签名仍钉住真实内容，纵深防御）→ contentHash 比对 → ed25519 验签。
+- **VALID ≠ TRUSTED（冻结，D19）**：`Signature VALID` 只证明"对应私钥持有者确实签过该锚点"；`Trust VERIFIED` 才代表"该指纹在本地信任白名单内"。两者严格分离，绝不混用（CLI E2E 有专项断言：untrusted 指纹下 Signature 仍 VALID）。
+- 输出含 `Key SHA256:<keyId 前 12 位>…`——**指纹 = 密码学身份**，与 signer 标签无关。
+- 信任白名单：`DSH_PACK_TRUSTED_KEYS`（逗号分隔 keyId，可带 `SHA256:` 前缀，校验时归一化）。三态：未配置 → `Trust: N/A`；命中 → `Trust: VERIFIED`；未命中 → `Trust: UNTRUSTED`（Signature 仍 VALID，不判 FAIL，仅标记；v0.3 不强制）。
+
+### E.4 密钥与安全边界
+
+- 私钥仅存在于打包机（chmod 0600）；`.dshpack` 内只含公钥，公钥泄露无风险。
+- **签名不加密**：secret redaction（D9）与签名互不替代——签名证明"谁产出"，redaction 保证"包里没有明文 secret"。
+- **signer 不是信任根**：`--signer` 只是 provenance 里的人类可读标签（display metadata），**绝不参与 Trust 判定**；信任身份一律来自 public key fingerprint（keyId）。`/pack sign` 输出会明确标注 "display label only"。
+- **re-sign 冻结（D18）**：已含 `metadata/signature.json` 的包再次 `/pack sign` → **默认 FAIL**（exit 1）；`--force` 显式替换（覆盖旧签名与 provenance）——与 install `--force`（D13）同原则：破坏性行为必须显式，防止"官方签名包被任意重签覆盖"。
+- 已知边界：信任策略当前为 env 白名单（无吊销/轮换/过期/多签名）；私钥管理依赖用户自持（无 KMS/HSM 集成）→ 均列 v0.4+（与 Encryption、Agent Image 同列后续）。
+
+### E.5 验证
+
+- 单测：keygen 往返（keyId 与公钥 DER 一致）、sign/verify 往返、篡改检测（翻转签名字节 / 锚点不一致 / 伪造公钥）、未签名分节（warn + require 失败）、**re-sign 默认拒绝 + `--force` 替换**、**trust 三态（N/A/VERIFIED/UNTRUSTED + `SHA256:` 前缀归一化）**、服务级 sign → verify VALID。
+- **真实 CLI 端到端验收（`scripts/signing-e2e.mjs`，23 项断言全过）**：keygen → pack+sign → verify（VALID/Trust N/A）→ trusted/untrusted（VALID≠TRUSTED）→ unsigned+require → tamper → re-sign。**验收发现并修复 1 个真实 bug**：`DefaultPackager.verify` 未透传 `requireSignature`（单测直调 verifyPack 未覆盖服务层），已修复并补服务级回归测试。
+- 全量：64 单测 + 2 真实 pnpm E2E + signing CLI E2E + typecheck 全绿（2026-08-29）。
 
 
 

@@ -51,13 +51,35 @@ image lock / trust.yaml / prune（跑通真实 GHCR 后再做，顺序见 DESIGN
   （只记 method/host/repo/status/scope，永不记 token）。缺 env 时 exit 2
   明确退出。
 
+### image lock（D46–D49 冻结，与真实 GHCR 验收并行开发）
+
+- **`/pack image lock <remoteRef> [--file <path>]`**：mutable remote tag →
+  immutable OCI manifest digest（D46/D48；锁对象是 **manifestDigest**，非
+  contentHash/blobDigest）。输出 `Resolved: <ref> ↓ <repo@sha256:...>` +
+  `Lock written: dsh-lock.json`。
+- **`dsh-lock.json` 最小 schema**（D47）：`{ schemaVersion: 1, images: {
+  "<mutable ref>": { "resolved": "repo@sha256:<manifestDigest>",
+  "manifestDigest": "sha256:..." } } }`——只钉版本，**不承载 Signature/
+  Trust**；contentHash/blobDigest/signature/trust/configHash 一律不塞
+  （都可从 immutable manifest 再解析）。
+- **`src/image/lockfile.ts`**：load/save/addLock/validate（broken file
+  loudly FAIL）；`service.lock()` resolve 远程 manifest（OCI envelope 校验）
+  后写入；digest 形态输入也做 transport digest 校验。
+- **Lock ≠ Trust（D49）**：locked image 运行时仍完整执行 OCI → DSH →
+  Signature → Trust 验证链（不因来自 lockfile 跳过 v0.3/v0.4 安全链）。
+- **验收判据（mock registry）**：T0 tag 漂移后 locked digest 仍拉旧
+  artifact ✓；T1 锁文件不存在 digest → pull FAIL（404，nothing imported）✓；
+  T2 registry 返回与 locked digest 不匹配的 manifest → transport
+  integrity FAIL ✓（mock 新增 manifest-swap tamper 模拟恶意 registry）。
+
 ### 验收状态
 
 - 本地验证：`node --check` 语法 OK；lib 导入路径全部存在；本地测试套件
-  不受影响（103 全绿）。
+  **109 全绿**（17 文件，+6 lock 测试）。
 - **真实 GHCR 运行须在 GitHub Actions `workflow_dispatch` 执行**（需
   `GITHUB_TOKEN` + `packages: write`，此环境无凭据不可本地运行真协议）——
-  首次运行结果待 CI 确认后回填本条目。
+  **Release Gate（§10）：GHCR 8/8 + image lock E2E 全过后才允许 v0.4.2
+  merge/tag；当前状态 PENDING（待回填）**。
 
 ## [v0.4.1] - 2026-08-29
 

@@ -24,8 +24,13 @@ import { parseReference, repository } from './reference.ts'
 import { ImageResolveError, resolveImage, type ResolvedImage } from './resolver.ts'
 import type { ImageStore } from './store.ts'
 import { applyTrustPolicy, type TrustPolicy } from './trust.ts'
+import { loadRegistryCredentials } from './registry/auth.ts'
+import { RegistryClient } from './registry/client.ts'
 import { pullImage, type PullResult } from './registry/pull.ts'
 import { pushImage, type PushResult } from './registry/push.ts'
+import { parseRemoteReference, registryBaseUrl, repoPath } from './registry/reference.ts'
+import type { OciManifestDigest } from './digests.ts'
+import { DEFAULT_LOCKFILE, addLockEntry, loadLockfile, saveLockfile } from './lockfile.ts'
 
 export interface ImportOptions {
   /** Apply a mutable tag after import, e.g. `why-daydream/agent:v1`. */
@@ -66,6 +71,19 @@ export interface RunResult {
   /** hand-off command (temporary runtime: `dsh --profile .run-<uuid>`). */
   boot: string
   temporary: boolean
+}
+
+export interface LockOptions {
+  /** lockfile path (default `dsh-lock.json` in cwd). */
+  file?: string
+}
+
+export interface LockResult {
+  mutableRef: string
+  /** immutable ref: `repo@sha256:<manifestDigest>` (D48). */
+  resolved: string
+  manifestDigest: OciManifestDigest
+  file: string
 }
 
 /** v0.4 default in-process image service (LocalImageStore backend). */
@@ -194,6 +212,33 @@ export class DefaultImageService {
       ...(options?.requireSignature === true ? { requireSignature: true } : {}),
       ...(options?.requireTrusted === true ? { requireTrusted: true } : {}),
     })
+  }
+
+  /**
+   * Lock a mutable remote tag to its immutable OCI manifest digest
+   * (DESIGN-v0.4.2.md §9, D46/D48): resolve the remote manifest (the OCI
+   * envelope is validated), pin `repo@sha256:<manifestDigest>` into
+   * dsh-lock.json. Lock ≠ Trust (D47) — the lockfile is a version pin only;
+   * running a locked image still runs the full OCI → DSH → Signature → Trust
+   * chain (D49).
+   */
+  async lock(remoteRefStr: string, options?: LockOptions): Promise<LockResult> {
+    const remoteRef = parseRemoteReference(remoteRefStr)
+    const client = new RegistryClient({
+      baseUrl: registryBaseUrl(remoteRef.registry),
+      repo: repoPath(remoteRef),
+      credentials: loadRegistryCredentials(remoteRef.registry),
+    })
+    const requested = remoteRef.digest ?? (remoteRef.tag as string)
+    const { digest } = await client.getManifest(requested)
+    if (remoteRef.digest !== undefined && digest !== remoteRef.digest) {
+      throw new Error(`manifest digest mismatch: expected ${remoteRef.digest}, actual ${digest} (transport integrity failure)`)
+    }
+    const resolved = `${repository(remoteRef)}@${digest}`
+    const file = options?.file ?? DEFAULT_LOCKFILE
+    const lockfile = addLockEntry(loadLockfile(file), remoteRefStr, digest, resolved)
+    saveLockfile(file, lockfile)
+    return { mutableRef: remoteRefStr, resolved, manifestDigest: digest, file }
   }
 
   /** Ensure a remote ref's image is local: pull when missing (cache-only policy). */

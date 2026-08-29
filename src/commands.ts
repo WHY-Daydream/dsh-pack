@@ -309,8 +309,20 @@ export async function runCommand(
             await images.remove(ref)
             return { kind: 'success', text: `✓ removed ${ref}` }
           }
+          case 'lock': {
+            const ref = args[0]
+            if (ref === undefined) {
+              return { kind: 'error', text: '✗ usage: /pack image lock <remoteRef> [--file <path>]' }
+            }
+            const file = typeof invocation.flags['file'] === 'string' ? invocation.flags['file'] : undefined
+            const result = await images.lock(ref, file !== undefined ? { file } : {})
+            return {
+              kind: 'success',
+              text: `Resolved:\n\n${result.mutableRef}\n        ↓\n${result.resolved}\n\nLock written: ${result.file}`,
+            }
+          }
           default:
-            return { kind: 'error', text: `✗ unknown image subcommand ${JSON.stringify(imageSub)} (import | ls | inspect | tag | rm)` }
+            return { kind: 'error', text: `✗ unknown image subcommand ${JSON.stringify(imageSub)} (import | ls | inspect | tag | rm | lock)` }
         }
       }
       case 'run': {

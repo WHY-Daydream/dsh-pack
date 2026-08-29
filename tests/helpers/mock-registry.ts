@@ -18,6 +18,8 @@ export interface MockRegistryTamper {
   blobDigest?: string
   /** Override the DSH contentHash inside the stored config blob. */
   configContentHash?: string
+  /** Serve ANOTHER manifest's bytes under this digest (malicious registry). */
+  manifestSwap?: { forDigest: string; serveTag: string }
 }
 
 export interface MockRegistryOptions {
@@ -153,7 +155,12 @@ export class MockRegistry {
     if (manifestMatch !== null && req.method === 'GET') {
       // group 1 = repo path, group 2 = tag-or-digest (multi-segment repo regex)
       const ref = decodeURIComponent(manifestMatch[2] as string)
-      const entry = this.manifests.get(ref)
+      // tamper: serve a DIFFERENT manifest's bytes under the requested digest
+      // (a malicious registry — the client's digest-form check must FAIL)
+      const serveRef = this.tamper.manifestSwap !== undefined && this.tamper.manifestSwap.forDigest === ref
+        ? this.tamper.manifestSwap.serveTag
+        : ref
+      const entry = this.manifests.get(serveRef)
       if (entry === undefined) {
         res.statusCode = 404
         res.end('{}')

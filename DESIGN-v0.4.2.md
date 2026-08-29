@@ -207,7 +207,114 @@ Checkout
 
 ---
 
-*本文档 v0.4.2 第一阶段设计定稿（2026-08-29）。冻结 D41–D45；v0.4.1 的
+## 9. image lock（冻结，D46–D49）
+
+**定位**：`image lock` 只做一件事——把 **mutable remote tag** 解析为
+**immutable OCI manifest digest**（远程分发身份的钉死），与真实 GHCR 验收
+并行开发，不依赖 GHCR 运行结果。
+
+### 冻结决策
+
+| ID | 决策 |
+|----|------|
+| D46 | image lock 将 mutable remote tag 解析为 immutable OCI manifest digest |
+| D47 | `dsh-lock.json` 只负责版本钉死，**不表示 Signature/Trust**（Lock ≠ Trust） |
+| D48 | lock 解析结果必须是 `repo@sha256:<manifestDigest>`（对象是 **OCI manifestDigest**，不是 DSH contentHash，也不是 blobDigest） |
+| D49 | 使用 lock 运行时**仍完整执行** OCI integrity → DSH integrity → Signature → Trust 验证（不因来自 lockfile 而跳过 v0.3/v0.4 安全链） |
+
+### 命令形态（v0.4.2 第一版只生成 lockfile，不增加消费命令）
+
+```bash
+/pack image lock ghcr.io/org/agent:prod
+/pack image lock ghcr.io/org/agent:prod --file dsh-lock.json
+```
+
+输出：
+
+```text
+Resolved:
+
+ghcr.io/org/agent:prod
+        ↓
+ghcr.io/org/agent@sha256:8a19...
+
+Lock written: dsh-lock.json
+```
+
+（`run --lock` / `pull --locked` 等消费命令留待后续版本；lockfile 的消费
+即标准 digest-form pull——不可变性由 OCI 协议保证。）
+
+### dsh-lock.json 最小 schema（冻结）
+
+```json
+{
+  "schemaVersion": 1,
+  "images": {
+    "ghcr.io/org/agent:prod": {
+      "resolved": "ghcr.io/org/agent@sha256:abc123...",
+      "manifestDigest": "sha256:abc123..."
+    }
+  }
+}
+```
+
+**最小字段原则**：不塞 contentHash / blobDigest / signature / trust /
+configHash / runtime versions——这些都能通过 immutable manifest 再解析
+出来。Lockfile 唯一职责：**Mutable Reference → Immutable Reference**。
+
+### 语义边界
+
+```text
+Lock
+  ↓
+immutable manifest digest
+  ↓
+pull
+  ↓
+OCI integrity
+  ↓
+DSH integrity
+  ↓
+Signature
+  ↓
+Trust Policy
+  ↓
+Run
+```
+
+lock 只能证明"部署后不会因 `prod` tag 漂移而换版本"，**不能证明 digest 可信**
+（D47/D49）。
+
+### 验收判据（mock registry，冻结）
+
+```text
+T0（核心价值）：
+  agent:prod → manifest A
+  image lock → lock = @sha256:A
+  后来：agent:prod → manifest B
+  使用 lock（pull @sha256:A）→ 仍然拉 A
+
+T1：锁文件写的是不存在的 digest → pull FAIL
+T2：Registry 返回与 locked digest 不匹配的 manifest → Transport Integrity FAIL
+```
+
+---
+
+## 10. Release Gate（冻结）
+
+```text
+v0.4.2 可以开发（image lock 等）
+  但 merge/tag 的硬门槛：
+    ① Real GHCR E2E 8/8 PASS（workflow_dispatch，GITHUB_TOKEN）
+    ② image lock E2E PASS（mock registry）
+  两者全过才允许 v0.4.2 merge/tag + CHANGELOG 验收状态改 PASS
+```
+
+**可以开发，不可以在真实 GHCR 通过之前宣布 v0.4.2 完成。**
+
+---
+
+*本文档 v0.4.2 第一阶段设计定稿（2026-08-29）。冻结 D41–D49；v0.4.1 的
 D32–D40 与 `.dshpack` v1 协议不受影响。实现顺序：DESIGN 冻结（本文）→
 PR CI workflow → GHCR E2E workflow → `scripts/ghcr-e2e.mjs`（8 项断言）→
 本地验证脚本语法 → CHANGELOG。真实 GHCR 运行须在 GitHub Actions

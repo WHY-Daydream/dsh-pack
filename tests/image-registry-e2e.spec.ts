@@ -233,6 +233,26 @@ describe('v0.4.1 North-Star E2E (local OCI mock registry)', () => {
     }
   })
 
+  it('blob upload 幂等（invariant 7）：同 image 重复 push → 第二次 HEAD 命中跳过上传，blobDigest 不变', async () => {
+    const root = tempRoot('upload-idem')
+    const mock = new MockRegistry()
+    await mock.start()
+    try {
+      const { file } = await makeSignedPack(root, root)
+      const { images } = makeImageEnv(root)
+      await images.import(file, { tag: 'org/agent:v1' })
+      const first = await images.push('org/agent:v1', remoteRefOf(mock, 'org/agent', 'v1'))
+      const second = await images.push('org/agent:v1', remoteRefOf(mock, 'org/agent', 'v2')) // same blob, new tag
+      expect(second.blobDigest).toBe(first.blobDigest)
+      expect(second.contentHash).toBe(first.contentHash)
+      // the registry holds exactly ONE copy of the blob (HEAD-hit skip path)
+      expect(mock.blobs.has(first.blobDigest)).toBe(true)
+      expect([...mock.blobs.keys()].filter((d) => d === first.blobDigest)).toHaveLength(1)
+    } finally {
+      await mock.stop()
+    }
+  })
+
   it('auth: Bearer challenge → token fetch → 重试成功（anonymous/token 之外的最小子集）', async () => {
     const root = tempRoot('auth')
     const mock = new MockRegistry({ requireAuth: true })

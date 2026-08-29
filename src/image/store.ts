@@ -7,6 +7,7 @@
  */
 
 import type { ImageManifest } from './manifest.ts'
+import type { DshContentDigest } from './digests.ts'
 
 /** One tag reference in the store (for `image ls`). */
 export interface ImageRefEntry {
@@ -17,10 +18,10 @@ export interface ImageRefEntry {
 
 /** v0.4 ImageStore contract (frozen). */
 export interface ImageStore {
-  /** Write a content-addressed blob; digest must match the bytes (invariant). */
-  putBlob(digest: string, bytes: Buffer): Promise<void>
-  getBlob(digest: string): Promise<Buffer | undefined>
-  hasBlob(digest: string): Promise<boolean>
+  /** Write a content-addressed blob keyed by its DSH contentHash (D21/D32). */
+  putBlob(digest: DshContentDigest, bytes: Buffer): Promise<void>
+  getBlob(digest: DshContentDigest): Promise<Buffer | undefined>
+  hasBlob(digest: DshContentDigest): Promise<boolean>
 
   /** Write a manifest; its digest must match the canonical JSON (invariant). */
   putManifest(digest: string, manifest: ImageManifest): Promise<void>
@@ -32,8 +33,8 @@ export interface ImageStore {
   getTag(repo: string, tag: string): Promise<string | undefined>
   removeTag(repo: string, tag: string): Promise<void>
 
-  /** Remove a blob (v0.4.0: direct; reference counting is v0.4.1). */
-  removeBlob(digest: string): Promise<void>
+  /** Remove a blob by contentHash (v0.4.0: direct; reference counting is v0.4.1). */
+  removeBlob(digest: DshContentDigest): Promise<void>
 
   /** All tag refs, for `image ls`. */
   listRefs(): Promise<ImageRefEntry[]>

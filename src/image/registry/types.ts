@@ -3,14 +3,9 @@
  * OCI blobDigest and OCI manifestDigest are THREE different identities and
  * must never share an alias — even though they are all `string` at runtime,
  * distinct named types prevent bugs like `verifyContentHash(manifestDigest)`.
+ * The canonical definitions live in image/digests.ts (dependency-free);
+ * this module re-exports them for registry-scoped imports.
  * @module @why-daydream/dsh-pack/image/registry/types
  */
 
-/** DSH semantic identity — signature/trust anchor (D33, unchanged from v0.3). */
-export type DshContentDigest = string
-
-/** OCI layer descriptor digest — SHA256 over the raw .dshpack archive bytes. */
-export type OciBlobDigest = string
-
-/** OCI manifest digest — SHA256 over the canonical OCI manifest JSON. */
-export type OciManifestDigest = string
+export type { DshContentDigest, OciBlobDigest, OciManifestDigest } from '../digests.ts'

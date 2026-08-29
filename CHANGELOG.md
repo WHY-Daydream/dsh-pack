@@ -57,6 +57,25 @@ Registry Server**。
 - **测试基建**：pack 输出确定性文件名（`<profile>-<date>.dshpack`）→
   同 outDir 二次调用覆盖，criterion 3 需唯一 pack 目录。
 
+### 发布前 OCI 分发不变量审查（2026-08-29，8 项专项）
+
+按 OCI 分发不变量清单逐项审查 `main..v0.4.1-oci`：
+
+| # | 不变量 | 结论 |
+|---|--------|------|
+| 1 | 三种 Digest 无混用（contentHash / blobDigest / manifestDigest） | ✅ 审查 + **类型收紧**：digests.ts 抽离三 alias（无依赖，registry/types 转导出），ImageStore blob 键 / `ImageManifest.artifact.digest` / `ResolvedImage.artifactDigest` 全部改为 `DshContentDigest`——语义边界显式化，grep 可审计 |
+| 2 | Pull 验证顺序不可退化（manifest → config → blob → contentHash → Signature → Trust → import） | ✅ 代码顺序确认；"先 import 再 verify trust" 被设计禁止（D39） |
+| 3 | `run(remote)` cache 语义：**缓存策略 ≠ 执行信任策略** | ✅ signed-but-untrusted 可 pull 缓存，`run --require-trusted` boot 前拒绝（E2E 判据 6）——下载与执行是两个安全边界 |
+| 4 | Remote tag mutable / digest immutable | ✅ E2E 判据 3：tag 更新后旧 manifest digest 仍可精确 pull——**冻结为发布 invariant** |
+| 5 | Registry ≠ Trust Authority（annotations/signer/metadata 全部忽略） | ✅ pull 不读任何 registry 提供的信任字段；Trust 只来自包内 v0.3 验签 + keyId 白名单 |
+| 6 | Auth secret 不进入日志/错误消息/Artifact | ✅ grep 确认 credentials 只出现在 auth.ts（解析/加载）与 client.ts（Authorization 头）；所有错误消息仅含 method/URL/status，无 headers |
+| 7 | Blob upload 幂等（HEAD 命中跳过；中断重试不影响 blobDigest） | ✅ 新增 E2E：同 image 重复 push → 第二次 HEAD 命中跳过上传，blobDigest 不变，registry 仅存一份 |
+| 8 | Local Store 幂等（同 digest+同内容 = 成功；同 digest+异内容 = FAIL） | ✅ putManifest `\n` 幂等 bug 已修复；新增单测固化（幂等成功 + 分歧报 digest mismatch） |
+
+发布 invariants（随 v0.4.1 冻结）：**digest 恒等 / pull 顺序不可退化 / cache≠trust /
+remote digest immutable / Registry≠Trust Authority / secret 不泄露 / 双幂等**
+（blob 上传幂等 + local store 幂等）。
+
 ### 验收（2026-08-29，本地 OCI mock registry，协议与 GHCR 相同子集）
 
 - **北极星 E2E 6 条判据全过**：

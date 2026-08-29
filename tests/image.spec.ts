@@ -146,6 +146,25 @@ describe('LocalImageStore (D25)', () => {
     expect(await store.hasBlob(blobDigest)).toBe(false)
   })
 
+  it('putManifest is idempotent for same digest+content and fails on divergence (invariant 8)', async () => {
+    const store = new LocalImageStore(join(tempRoot('manifest-idem'), 'images'))
+    const bytes = Buffer.from('pack-bytes')
+    const blobDigest = `sha256:${sha256Hex(bytes)}`
+    const manifest = buildImageManifest({
+      artifactDigest: blobDigest, artifactSize: bytes.length, configHash: 'sha256:' + 'c'.repeat(64), dshVersion: DSH_VERSION,
+    })
+    const manifestDigest = imageManifestDigest(manifest)
+    await store.putManifest(manifestDigest, manifest)
+    await store.putManifest(manifestDigest, manifest) // same digest + same content → idempotent success
+    // different content under the same digest is unreachable (the digest
+    // derives from content); the guard fires as a digest mismatch instead
+    const other = buildImageManifest({
+      artifactDigest: blobDigest, artifactSize: bytes.length + 1, configHash: 'sha256:' + 'c'.repeat(64), dshVersion: DSH_VERSION,
+    })
+    expect(imageManifestDigest(other)).not.toBe(manifestDigest)
+    await expect(store.putManifest(manifestDigest, other)).rejects.toThrow(/digest mismatch/)
+  })
+
   it('enforces the content-addressing invariant (format + same-digest consistency)', async () => {
     const store = new LocalImageStore(join(tempRoot('invariant'), 'images'))
     await expect(store.putBlob('not-a-digest', Buffer.from('x'))).rejects.toThrow(/invalid blob digest/)

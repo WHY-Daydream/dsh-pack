@@ -29,8 +29,10 @@ import { computePackContentHash } from '../pack-builder.ts'
 import { prettyJson } from '../canonical.ts'
 import { PackError } from '../service.ts'
 import { signEvidence, verifyEvidenceEnvelope, verifyEvidenceSigner, verifyEvidenceSubject } from './envelope.ts'
+import { buildReceiptPath, validateBuildRecord } from './build-record.ts'
 import type {
   EvidenceEnvelope, EvidenceSignOptions, EvidenceSignResult, EvidenceVerifyResult,
+  ProvenanceSignOptions, ProvenanceSignResult,
 } from '../types.ts'
 
 export interface EvidenceVerifyOptions {
@@ -46,6 +48,11 @@ export interface EvidenceService {
   sign(file: string, opts: EvidenceSignOptions): Promise<EvidenceSignResult>
   /** Verify an evidence file (self-integrity + optional artifact/signer binding). */
   verify(file: string, opts?: EvidenceVerifyOptions): Promise<EvidenceVerifyResult>
+  /**
+   * Sign a `build-provenance` Evidence from the pack's BUILD-TIME receipt
+   * (D68): consumes only what `/pack` recorded — never the current git HEAD.
+   */
+  provenance(file: string, opts: ProvenanceSignOptions): Promise<ProvenanceSignResult>
 }
 
 /** Default evidence service: pack contentHash is the immutable subject (D64). */
@@ -133,6 +140,72 @@ export class DefaultEvidenceService implements EvidenceService {
       subject: ev.subject.contentHash,
       statementDigest: ev.statementDigest,
       errors,
+    }
+  }
+
+  /**
+   * Sign `build-provenance` Evidence from the pack's build receipt (D68):
+   * the receipt was captured at `/pack` time and records the actual inputs.
+   * This command NEVER re-reads the current git state — and it refuses a
+   * receipt whose subject does not match the artifact's recomputed anchor
+   * (a swapped/edited receipt cannot be laundered into provenance).
+   */
+  async provenance(file: string, opts: ProvenanceSignOptions): Promise<ProvenanceSignResult> {
+    if (!existsSync(file)) throw new PackError(`pack file not found: ${file}`, 1)
+    const receiptPath = buildReceiptPath(file)
+    if (!existsSync(receiptPath)) {
+      throw new PackError(
+        `no build receipt at ${receiptPath} — pack the artifact with /pack to record build-time inputs (D68)`,
+        1,
+      )
+    }
+    let raw: unknown
+    try {
+      raw = JSON.parse(readFileSync(receiptPath, 'utf8'))
+    } catch {
+      throw new PackError(`build receipt ${receiptPath} is not valid JSON`, 1)
+    }
+    const validated = validateBuildRecord(raw)
+    if (!validated.ok) throw new PackError(`invalid build receipt: ${validated.errors.join('; ')}`, 1)
+    const receipt = validated.record
+
+    // receipt anti-tamper: subject must equal the ACTUAL artifact anchor
+    const actual = await computePackContentHash(readFileSync(file))
+    if (receipt.subject.contentHash !== actual) {
+      throw new PackError(
+        `build receipt subject is ${receipt.subject.contentHash}, artifact contentHash is ${actual}`,
+        1,
+      )
+    }
+
+    // D68: a dirty build tree must not claim a commit that does not describe
+    // the actual inputs — default FAIL; --allow-dirty signs with the recorded
+    // sourceTreeDigest instead.
+    if (receipt.source.dirty && opts.allowDirty !== true) {
+      throw new PackError(
+        'provenance FAIL: the build tree was dirty at pack time; use --allow-dirty to sign with the recorded sourceTreeDigest (D68)',
+        1,
+      )
+    }
+
+    // D72 trust boundary: this is a POST-BUILD signing of an UNSIGNED build
+    // receipt — the receipt could have been edited after the build, so the
+    // signed statement is explicitly marked `post-build-receipt` and can never
+    // claim to be a cryptographic attestation of the unmodified build moment.
+    // (Only `/pack --evidence-key` signs AT the build site as `build-time`.)
+    const result = await this.sign(file, {
+      type: 'build-provenance',
+      statement: { ...receipt, capture: { mode: 'post-build-receipt' } },
+      key: opts.key,
+      ...(opts.signer !== undefined ? { signer: opts.signer } : {}),
+      ...(opts.outDir !== undefined ? { outDir: opts.outDir } : {}),
+    })
+    return {
+      ...result,
+      ...(receipt.source.gitCommit !== undefined ? { gitCommit: receipt.source.gitCommit } : {}),
+      dirty: receipt.source.dirty,
+      ...(receipt.source.sourceTreeDigest !== undefined ? { sourceTreeDigest: receipt.source.sourceTreeDigest } : {}),
+      captureMode: 'post-build-receipt' as const,
     }
   }
 }

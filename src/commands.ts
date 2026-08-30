@@ -36,7 +36,7 @@ export function parseCommand(rawInput: string): ParsedInvocation {
   const flags: Record<string, string | boolean> = {}
   const boolFlags = new Set([
     'strict', 'allow-secrets', 'allow-nonportable', 'force', 'ignore-runtime-version', 'json', 'portable',
-    'require-signature', 'require-trusted',
+    'require-signature', 'require-trusted', 'provenance', 'allow-dirty',
   ])
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i] as string
@@ -79,6 +79,9 @@ function renderPackSummary(invocation: ParsedInvocation, outcome: Awaited<Return
   lines.push(`✓ ${outcome.redacted} secrets redacted`)
   for (const warning of outcome.warnings) lines.push(`⚠ [${warning.code}] ${warning.message}`)
   lines.push('✓ configuration validated', '', `Created: ${outcome.file}`)
+  if (outcome.receipt !== undefined) lines.push(`  build receipt: ${outcome.receipt}`)
+  // D72: `/pack --evidence-key` signs AT the build site — build-time attestation.
+  if (outcome.evidence !== undefined) lines.push(`  build-time provenance attestation: ${outcome.evidence}`)
   return lines.join('\n')
 }
 
@@ -177,8 +180,12 @@ export async function runCommand(
           allowSecrets: invocation.flags['allow-secrets'] === true,
           allowNonportable: invocation.flags['allow-nonportable'] === true,
           portable: invocation.flags['portable'] === true,
+          provenance: invocation.flags['provenance'] === true,
+          allowDirty: invocation.flags['allow-dirty'] === true,
         }
         if (typeof invocation.flags['out'] === 'string') opts.outDir = invocation.flags['out']
+        if (typeof invocation.flags['evidence-key'] === 'string') opts.evidenceKey = invocation.flags['evidence-key']
+        if (typeof invocation.flags['signer'] === 'string') opts.signer = invocation.flags['signer']
         const outcome = await packager.pack(opts)
         return { kind: 'success', text: renderPackSummary(invocation, outcome) }
       }
@@ -331,8 +338,37 @@ export async function runCommand(
             if (!result.ok) lines.push(`  errors: ${result.errors.join('; ')}`)
             return { kind: result.ok ? 'success' : 'error', text: lines.join('\n') }
           }
+          case 'provenance': {
+            const file = args[0]
+            const key = typeof invocation.flags['key'] === 'string' ? invocation.flags['key'] : undefined
+            if (file === undefined || key === undefined) {
+              return {
+                kind: 'error',
+                text: '✗ usage: /pack evidence provenance <file.dshpack> --key <private.pem> [--allow-dirty] [--signer <name>] [--out <dir>]',
+              }
+            }
+            const signer = typeof invocation.flags['signer'] === 'string' ? invocation.flags['signer'] : undefined
+            const outDir = typeof invocation.flags['out'] === 'string' ? invocation.flags['out'] : undefined
+            const result = await evidence.provenance(file, {
+              key,
+              ...(invocation.flags['allow-dirty'] === true ? { allowDirty: true } : {}),
+              ...(signer !== undefined ? { signer } : {}),
+              ...(outDir !== undefined ? { outDir } : {}),
+            })
+            const lines = [
+              `✓ post-build provenance endorsement signed: ${result.file}`,
+              `  origin: ${result.captureMode} (endorsement — NOT a build-time attestation; the unsigned receipt could have been edited after the build, D72)`,
+              `  subject (contentHash): ${result.contentHash}`,
+              `  statementDigest: ${result.statementDigest}`,
+              `  git commit (recorded at build time): ${result.gitCommit ?? 'n/a (non-git build site)'}`,
+              `  dirty: ${String(result.dirty)}${result.sourceTreeDigest !== undefined ? ` (sourceTreeDigest ${result.sourceTreeDigest})` : ''}`,
+              `  signer fingerprint: SHA256:${result.keyId}`,
+              ...(result.signer !== undefined ? [`  signer: ${result.signer} (display label only — trust identity is the fingerprint)`] : []),
+            ]
+            return { kind: 'success', text: lines.join('\n') }
+          }
           default:
-            return { kind: 'error', text: `✗ unknown evidence subcommand ${JSON.stringify(evidenceSub)} (sign | verify)` }
+            return { kind: 'error', text: `✗ unknown evidence subcommand ${JSON.stringify(evidenceSub)} (sign | verify | provenance)` }
         }
       }
       case 'image': {

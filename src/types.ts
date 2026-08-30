@@ -334,3 +334,33 @@ export interface EvidenceVerifyResult {
   /** Ordered failure reasons (empty when ok). */
   errors: string[]
 }
+
+/** Options for `/pack evidence provenance` (v0.5 alpha.2, D68–D71). */
+export interface ProvenanceSignOptions {
+  /** Path to the private key PEM (pkcs8). */
+  key: string
+  /** Allow signing from a dirty tree — uses the recorded sourceTreeDigest (D68). */
+  allowDirty?: boolean
+  /** Optional human-readable signer label (display only). */
+  signer?: string
+  /** Output directory (default: alongside the input pack). */
+  outDir?: string
+}
+
+/**
+ * Result of `/pack evidence provenance`: the build-provenance Evidence signed
+ * from the pack's BUILD-TIME receipt (never from the current repo state, D68).
+ */
+export interface ProvenanceSignResult extends EvidenceSignResult {
+  /** Full git commit SHA recorded at build time (D68), if the site was a git repo. */
+  gitCommit?: string
+  /** Whether the build tree was dirty at pack time (D68). */
+  dirty: boolean
+  /** sourceTreeDigest present when dirty (D68). */
+  sourceTreeDigest?: string
+  /**
+   * D72: this result is always a POST-BUILD endorsement — the unsigned
+   * receipt is re-signed here, so it is never marked `build-time`.
+   */
+  captureMode: 'post-build-receipt'
+}

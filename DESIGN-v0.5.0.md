@@ -244,8 +244,8 @@ Evidence 被篡改
 | v0.5.0-alpha.1（已冻结） | Evidence Foundation：Signed Evidence Envelope、D64–D67、负例矩阵 + **Protocol Hardening**（H1 domain separation / H2 verifiedKeyId / H3 Evidence Collection） |
 | v0.5.0-alpha.2（本阶段） | **Build Provenance v2**（D68–D72 冻结，§6）：构建时采集 / Git source identity / materials digests / dependency closure / environment matrix + **D72 origin 语义**（build-time attestation vs post-build endorsement） |
 | v0.5.0-alpha.3（本阶段） | **SBOM Evidence**（D73–D80 冻结，§7）：CycloneDX 1.7 JSON canonical；只消费 artifact closure（禁扫当前机器）；独立文档 + signed envelope；deterministic；UNKNOWN 语义 |
-| v0.5.0-alpha.4 | **Capability Manifest**（Declared vs Observed Capability，Runtime Evidence 前奏） |
-| v0.5.0-beta.1 | Isolated Runtime Attestation（cold boot / effects / cleanup / rollback） |
+| v0.5.0-alpha.4（本阶段） | **Declared Capability Manifest**（D81–D88 冻结，§8）：纯 artifact inspection，只声明"能做什么"；Observed 归 beta.1 |
+| v0.5.0-beta.1 | Isolated Runtime Attestation（cold boot / effects / cleanup / rollback）+ **Observed Capability**（declared vs observed 对比） |
 | v0.5.0-beta.2 | trust.yaml v2（requireEvidence / runtime matrix / capability policy） |
 | v0.5.0-rc.1 | 供应链负例矩阵（cache / latest / prepare / native / tampering / dependency re-resolution / cross-platform） |
 | v0.5.0 | OCI Evidence Distribution（provenance/sbom/attestation 作为 subject 指向 artifact 的独立对象） |
@@ -255,15 +255,15 @@ Evidence 被篡改
 - D64–D67 + H1–H3：Evidence Foundation + Protocol Hardening（§3，已冻结）
 - D68–D72：Build Provenance v2 + D72 origin 语义（§6，已冻结，v0.5.0-alpha.2）
 - D73–D80：SBOM Evidence（§7，已冻结，v0.5.0-alpha.3）
-- 后续阶段决策（Capability / Runtime Attestation / trust.yaml v2）：阶段开始前另行冻结
+- D81–D88：Declared Capability Manifest（§8，已冻结，v0.5.0-alpha.4）
+- 后续阶段决策（Runtime Attestation / trust.yaml v2）：阶段开始前另行冻结
 
 ## 5. 范围外（本轮不做）
 
-- Capability Manifest（alpha.4）
-- trust.yaml v2（requireEvidence / runtime / capabilities）（beta.2）
+- Observed Capability / network-filesystem-process effects（beta.1 Runtime Attestation）
+- trust.yaml v2（requireEvidence / runtime / capabilities / allow-deny）（beta.2）
 - OCI Referrers / Evidence 挂载（v0.5.0 收尾）
-- Runtime Attestation（beta.1）
-- vulnerability scanning / CVE lookup / license policy / capability policy / runtime permissions（明确不做，§7.7）
+- vulnerability scanning / CVE lookup / license policy / capability policy / runtime permissions（明确不做，§7.7/§8.6）
 - SPDX exporter / CycloneDX 2.0（future）
 - 修改 v0.4.2 任何已冻结行为（sign / verify / trust-policy / image 语义不变）
 
@@ -498,9 +498,106 @@ Document 给标准工具，Envelope 证明归属。
 SBOM 只回答：**"这个 artifact 里面/依赖了什么？"**
 不回答："它安全吗？它能运行吗？我应该信任吗？"（后续层职责）
 
+## 8. Declared Capability Manifest（冻结，D81–D88，v0.5.0-alpha.4）
+
+### 8.1 静态来源调研结论（冻结）
+
+> alpha.4 只回答 **"artifact 声明要向 DSH 暴露什么能力"**，不回答"运行时实际
+> 做了什么"。**纯 artifact inspection，无 cold boot**——绝不为生成 declared
+> manifest 而执行插件代码（static evidence 一旦变成 runtime observation，边界就混了）。
+
+对 deepseek-harness profile schema（app-boot `profile.ts`）的调研结论：
+
+- `DshProfileManifest` 只有 `bundles?: string[]`——**没有** tools/skills/services/
+  providers 静态声明字段。
+- **providers / services 可静态发现**：composition / patch 行
+  （`insert: [{ id, provider, config }]`）就是静态声明；行 id 即稳定 capability
+  id（非显示名）；`provider` 字段区分 provider 类。
+- **tools / skills 只能运行时注册**（插件代码 `ctx.commands.register` / tool
+  registration）→ 静态不可发现 → 记录 UNKNOWN + reason（C10），不执行代码、
+  不按名称猜。
+- **来源追溯**（D85）：id 命中 `profile/cordis.patch.yml` 的 insert 行 →
+  `declaredBy.layer = profile:cordis.patch.yml`；其余行只能归属 bundle layer
+  （bundle patch 文本不在 artifact 内，per-bundle 归属如实 UNKNOWN，D86）。
+
+### 8.2 Schema（冻结）
+
+```json
+{
+  "schemaVersion": 1,
+  "subject": {
+    "contentHash": "sha256:..."
+  },
+  "declared": {
+    "providers": [
+      { "id": "llm-deepseek", "kind": "provider", "declaredBy": { "layer": "profile:cordis.patch.yml" } }
+    ],
+    "services": [],
+    "tools": [],
+    "skills": []
+  },
+  "undiscoverable": {
+    "tools": { "reason": "requires runtime registration (no cold boot, D86)" },
+    "skills": { "reason": "requires runtime registration (no cold boot, D86)" }
+  }
+}
+```
+
+- 每个 capability：稳定 `id`（行 id）+ `kind`（provider | service）+ `declaredBy`
+- 空集合是**事实**（C5），`undiscoverable` 是**原因**（C10）——两者都不猜
+
+### 8.3 冻结决策（D81–D88）
+
+| # | 决策 |
+|---|------|
+| D81 | Capability Manifest **独立于 SBOM**（SBOM=软件构成，Capability=Agent/runtime surface，两个证据域；不塞进 CycloneDX properties） |
+| D82 | subject **绑定实际 artifact contentHash**；不绑 configHash / tag / profile name / package version |
+| D83 | **Declared 与 Observed 永久分离**：alpha.4 只生成 `declared`，禁止出现 `observed`（防止污染 beta.1 Runtime Attestation 边界） |
+| D84 | capability 用**稳定结构化 identity**：id/kind/source；显示名可变，identity 不靠 UI 文案 |
+| D85 | **来源可追溯**：declaredBy 至少记录 source layer / registration path；静态不可得的 per-bundle 归属如实 UNKNOWN |
+| D86 | 静态无法证明的能力 = **UNKNOWN**：不按名称/代码语义猜（tool 名叫 fetch ≠ network=true）；不执行 runtime code 来发现 |
+| D87 | Manifest **只描述能力集合，不做权限判断**：无 safe/unsafe/allowed/denied/least-privilege（留给 trust.yaml v2） |
+| D88 | **deterministic**：同 artifact → byte-identical；排序覆盖 kind/id/declaredBy 等全部 key |
+
+### 8.4 命令面（冻结）
+
+```text
+/pack evidence capability <file.dshpack> --key <private.pem> [--signer <name>] [--out <dir>]
+    → documents/<capabilityDigest>.capability.json（declared manifest 文档）
+    → capability/<statementDigest>.json（Signed Evidence，subject = 重算 contentHash）
+
+验证复用统一入口：/pack evidence verify <capability-envelope.json> --against <file.dshpack>
+```
+
+### 8.5 验收判据（冻结，C0–C10）
+
+| # | 场景 | 预期 |
+|---|------|------|
+| C0 | 同一 artifact 生成两次 | byte identical + digest identical |
+| C1 | subject.contentHash | == 实际 artifact 重算值 |
+| C2 | 明确声明 provider/service 行 | manifest 出现稳定 id（非显示名） |
+| C3 | provider/service 分类正确 | kind 正确（按行 `provider` 字段） |
+| C4 | 同名 capability 不同 source | 不错误合并（各自 declaredBy 保留） |
+| C5 | artifact 无 capability 声明 | 空集合（不猜） |
+| C6 | 修改当前 workspace | 已有 artifact manifest 不变（只消费 artifact） |
+| C7 | 篡改 capability document | digest mismatch → Evidence FAIL |
+| C8 | Artifact A capability evidence 挂到 B | subject FAIL |
+| C9 | SBOM + provenance + capability | evidence collection 三者共存、不覆盖 |
+| C10 | 静态不可发现（tools/skills） | UNKNOWN + reason，不执行 runtime code |
+
+### 8.6 明确不做（scope guard）
+
+```text
+❌ observed capability / network-filesystem-process effects（beta.1）
+❌ allow/deny / safe / least-privilege 判断（beta.2 trust.yaml v2）
+❌ cold boot / 执行插件代码发现能力
+❌ 从能力名称推断权限（tool 名叫 fetch ≠ network=true）
+```
+
 ---
 
-*本文档 v0.5.0 设计阶段定稿（2026-08-30）。本阶段冻结 D64–D80（+ H1–H3）；
+*本文档 v0.5.0 设计阶段定稿（2026-08-30）。本阶段冻结 D64–D88（+ H1–H3）；
 v0.4.2 的 D41–D63 不受影响。实现顺序：DESIGN 冻结（本文）→ `src/evidence/`
-模块（envelope / service / build-record / sbom）→ pack 构建时采集 → CLI 接线 →
-P0–P12 + S0–S13 负例测试 → typecheck + vitest 全绿 → CHANGELOG。*
+模块（envelope / service / build-record / sbom / capability）→ pack 构建时采集
+→ CLI 接线 → P0–P12 + S0–S13 + C0–C10 负例测试 → typecheck + vitest 全绿 →
+CHANGELOG。*

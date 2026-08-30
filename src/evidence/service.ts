@@ -33,7 +33,12 @@ import { buildReceiptPath, validateBuildRecord } from './build-record.ts'
 import {
   generateSbomFromPack, SBOM_EVIDENCE_TYPE, SBOM_FORMAT, SBOM_MEDIA_TYPE, SBOM_SPEC_VERSION,
 } from './sbom.ts'
+import {
+  CAPABILITY_EVIDENCE_TYPE, CAPABILITY_FORMAT, CAPABILITY_SCHEMA_VERSION,
+  generateCapabilityManifestFromPack,
+} from './capability.ts'
 import type {
+  CapabilitySignOptions, CapabilitySignResult,
   EvidenceEnvelope, EvidenceSignOptions, EvidenceSignResult, EvidenceVerifyResult,
   ProvenanceSignOptions, ProvenanceSignResult, SbomSignOptions, SbomSignResult,
 } from '../types.ts'
@@ -61,6 +66,12 @@ export interface EvidenceService {
    * write the standalone document, and sign the `sbom` Evidence (D75).
    */
   sbom(file: string, opts: SbomSignOptions): Promise<SbomSignResult>
+  /**
+   * Generate a Declared Capability Manifest by PURE artifact inspection
+   * (D81–D88, no cold boot), write the standalone document, and sign the
+   * `capability` Evidence bound to the actual contentHash (D82).
+   */
+  capability(file: string, opts: CapabilitySignOptions): Promise<CapabilitySignResult>
 }
 
 /** Default evidence service: pack contentHash is the immutable subject (D64). */
@@ -262,6 +273,54 @@ export class DefaultEvidenceService implements EvidenceService {
       documentFile,
       sbomDigest: digest,
       componentCount: bom.components.length,
+    }
+  }
+
+  /**
+   * Generate the Declared Capability Manifest by PURE artifact inspection
+   * (D81–D88): composed rows + the packed profile patch only — never a cold
+   * boot, never plugin execution. Write the standalone document to
+   * `documents/<capabilityDigest>.capability.json`, then sign the `capability`
+   * Evidence: subject = actual contentHash (D82), statement carries
+   * format/schemaVersion + capabilityDigest (D88).
+   */
+  async capability(file: string, opts: CapabilitySignOptions): Promise<CapabilitySignResult> {
+    if (!existsSync(file)) throw new PackError(`pack file not found: ${file}`, 1)
+    const contentHash = await computePackContentHash(readFileSync(file))
+    const { document, digest, manifest } = await generateCapabilityManifestFromPack(readFileSync(file), contentHash)
+    const digestHex = digest.slice('sha256:'.length)
+
+    // standalone document (D81: separate evidence domain from SBOM)
+    const outDir = opts.outDir ?? dirname(file)
+    const collectionRoot = join(outDir, `${basename(file, '.dshpack')}.dshpack.evidence`)
+    const documentFile = join(collectionRoot, 'documents', `${digestHex}.capability.json`)
+    mkdirSync(dirname(documentFile), { recursive: true })
+    if (existsSync(documentFile)) {
+      const existing = readFileSync(documentFile, 'utf8')
+      if (existing !== document) {
+        throw new PackError(`capability document already exists (refusing to overwrite): ${documentFile}`, 1)
+      }
+    } else {
+      writeFileSync(documentFile, document)
+    }
+
+    // signed Evidence envelope bound to the artifact (D82)
+    const result = await this.sign(file, {
+      type: CAPABILITY_EVIDENCE_TYPE,
+      statement: {
+        format: CAPABILITY_FORMAT,
+        schemaVersion: CAPABILITY_SCHEMA_VERSION,
+        capabilityDigest: { algorithm: 'sha256', value: digestHex },
+      },
+      key: opts.key,
+      ...(opts.signer !== undefined ? { signer: opts.signer } : {}),
+      ...(opts.outDir !== undefined ? { outDir: opts.outDir } : {}),
+    })
+    return {
+      ...result,
+      documentFile,
+      capabilityDigest: digest,
+      capabilityCount: manifest.declared.providers.length + manifest.declared.services.length,
     }
   }
 }

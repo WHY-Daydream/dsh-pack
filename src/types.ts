@@ -388,3 +388,28 @@ export interface SbomSignResult extends EvidenceSignResult {
   /** Number of CycloneDX components (display + tests). */
   componentCount: number
 }
+
+/** Options for `/pack evidence capability` (v0.5 alpha.4, D81–D88). */
+export interface CapabilitySignOptions {
+  /** Path to the private key PEM (pkcs8). */
+  key: string
+  /** Optional human-readable signer label (display only). */
+  signer?: string
+  /** Output directory (default: alongside the input pack). */
+  outDir?: string
+}
+
+/**
+ * Result of `/pack evidence capability`: the declared capability manifest
+ * document (`documents/<capabilityDigest>.capability.json`) plus its Signed
+ * Evidence envelope (`capability/<statementDigest>.json`) bound to the
+ * artifact contentHash (D82).
+ */
+export interface CapabilitySignResult extends EvidenceSignResult {
+  /** The standalone declared-capability manifest document path. */
+  documentFile: string
+  /** Deterministic digest over the document bytes (D88). */
+  capabilityDigest: string
+  /** Number of declared capabilities (providers + services; display + tests). */
+  capabilityCount: number
+}

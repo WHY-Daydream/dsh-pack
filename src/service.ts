@@ -417,16 +417,25 @@ export class DefaultPackager implements PackagerService {
     })
   }
 
-  /** D109/D110: sbom candidates — documentKey is the semantic document anchor. */
+  /** D109/D110/D120: sbom candidates — documentKey is the semantic document anchor.
+   *  D120 (rc.1): when a document file EXISTS under the claimed digest it MUST
+   *  hash to that digest — a substituted SBOM document makes the candidate
+   *  UNVERIFIED (mirrors the attestation document check). A MISSING document
+   *  keeps the v0.3 signing workflow semantics (envelope-only trust), because
+   *  `evidence.sign` does not require a document file. */
   private sbomCandidates(collectionRoot: string, contentHash: string): SbomCandidate[] {
     return this.scanEnvelopes(collectionRoot, 'sbom').map((envelope) => {
       const base = this.verifiedBase(envelope, contentHash)
       const statement = envelope.statement as { sbomDigest?: { value?: unknown } } | undefined
       const digestValue = statement?.sbomDigest?.value
-      return {
-        ...base,
-        ...(typeof digestValue === 'string' && digestValue !== '' ? { documentKey: digestValue } : {}),
+      if (typeof digestValue !== 'string' || digestValue === '') {
+        return { ...base }
       }
+      const documentFile = join(collectionRoot, 'documents', `${digestValue}.cdx.json`)
+      if (existsSync(documentFile) && sha256Hex(readFileSync(documentFile, 'utf8')) !== digestValue) {
+        return { ...base, verified: false, documentKey: digestValue }
+      }
+      return { ...base, documentKey: digestValue }
     })
   }
 

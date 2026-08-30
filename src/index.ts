@@ -11,6 +11,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { makeHandler } from './commands.ts'
 import { DefaultImageService } from './image/service.ts'
 import { LocalImageStore } from './image/local-store.ts'
+import { DefaultEvidenceService } from './evidence/service.ts'
 import { resolveDshHome } from './profile-reader.ts'
 import { DefaultPackager, readInstalledDshVersion, type PackagerService } from './service.ts'
 
@@ -20,6 +21,8 @@ declare module '@deepseek-ai/cordis' {
     packager: PackagerService
     /** v0.4 image service seam (DESIGN-v0.4.md §10). */
     images: DefaultImageService
+    /** v0.5 evidence service seam (DESIGN-v0.5.0.md §3). */
+    evidence: DefaultEvidenceService
   }
 }
 
@@ -37,12 +40,15 @@ export const apply = (ctx: Context): (() => void) => {
   })
   ctx.provide('images', images)
 
+  const evidence = new DefaultEvidenceService()
+  ctx.provide('evidence', evidence)
+
   const disposers: (() => void)[] = []
-  const handler = makeHandler(packager, images)
+  const handler = makeHandler(packager, images, evidence)
   disposers.push(ctx.commands.register({
     name: 'pack',
-    description: 'Pack, inspect, verify, install, sign or run DSH artifacts (.dshpack / images)',
-    input: { hint: '[profile] | inspect <file> | verify <file> | install <file> | sign <file> | keygen | image <import|ls|inspect|tag|rm> | run <ref>' },
+    description: 'Pack, inspect, verify, install, sign or run DSH artifacts (.dshpack / images / evidence)',
+    input: { hint: '[profile] | inspect <file> | verify <file> | install <file> | sign <file> | keygen | evidence <sign|verify> | image <import|ls|inspect|tag|rm> | run <ref>' },
     handler,
   }))
 

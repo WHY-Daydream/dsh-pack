@@ -243,7 +243,7 @@ Evidence 被篡改
 | ---- | ---- |
 | v0.5.0-alpha.1（已冻结） | Evidence Foundation：Signed Evidence Envelope、D64–D67、负例矩阵 + **Protocol Hardening**（H1 domain separation / H2 verifiedKeyId / H3 Evidence Collection） |
 | v0.5.0-alpha.2（本阶段） | **Build Provenance v2**（D68–D72 冻结，§6）：构建时采集 / Git source identity / materials digests / dependency closure / environment matrix + **D72 origin 语义**（build-time attestation vs post-build endorsement） |
-| v0.5.0-alpha.3 | **SBOM Evidence**（Build/Supply-chain：package name/version、registry resolved、integrity、vendored 与 file:/link: contentDigest、license、lifecycle scripts、native indicator；SBOM digest 入 Evidence） |
+| v0.5.0-alpha.3（本阶段） | **SBOM Evidence**（D73–D80 冻结，§7）：CycloneDX 1.7 JSON canonical；只消费 artifact closure（禁扫当前机器）；独立文档 + signed envelope；deterministic；UNKNOWN 语义 |
 | v0.5.0-alpha.4 | **Capability Manifest**（Declared vs Observed Capability，Runtime Evidence 前奏） |
 | v0.5.0-beta.1 | Isolated Runtime Attestation（cold boot / effects / cleanup / rollback） |
 | v0.5.0-beta.2 | trust.yaml v2（requireEvidence / runtime matrix / capability policy） |
@@ -254,15 +254,17 @@ Evidence 被篡改
 
 - D64–D67 + H1–H3：Evidence Foundation + Protocol Hardening（§3，已冻结）
 - D68–D72：Build Provenance v2 + D72 origin 语义（§6，已冻结，v0.5.0-alpha.2）
-- 后续阶段决策（SBOM / Capability / Runtime Attestation / trust.yaml v2）：阶段开始前另行冻结
+- D73–D80：SBOM Evidence（§7，已冻结，v0.5.0-alpha.3）
+- 后续阶段决策（Capability / Runtime Attestation / trust.yaml v2）：阶段开始前另行冻结
 
 ## 5. 范围外（本轮不做）
 
-- SBOM Evidence（alpha.3）
 - Capability Manifest（alpha.4）
 - trust.yaml v2（requireEvidence / runtime / capabilities）（beta.2）
 - OCI Referrers / Evidence 挂载（v0.5.0 收尾）
 - Runtime Attestation（beta.1）
+- vulnerability scanning / CVE lookup / license policy / capability policy / runtime permissions（明确不做，§7.7）
+- SPDX exporter / CycloneDX 2.0（future）
 - 修改 v0.4.2 任何已冻结行为（sign / verify / trust-policy / image 语义不变）
 
 ## 6. Build Provenance v2（冻结，D68–D71，v0.5.0-alpha.2）
@@ -381,9 +383,124 @@ post-build endorsement。
 | P11 | pack 后修改 unsigned receipt（gitCommit/material） | post-build provenance 允许生成，但 origin 必须 `post-build-receipt`，绝不显示 `build-time`（D72） |
 | P12 | `/pack --evidence-key` 构建时签名后再修改 receipt | 原 build-time attestation 仍 VALID、subject 正确、statement 不变（不受后续 receipt 修改影响，D72） |
 
+## 7. SBOM Evidence（冻结，D73–D80，v0.5.0-alpha.3）
+
+### 7.1 关键选择（冻结）：CycloneDX 1.7 JSON 为唯一 canonical SBOM format
+
+```text
+format      = CycloneDX
+specVersion = 1.7
+mediaType   = application/vnd.cyclonedx+json
+```
+
+- CycloneDX 1.7 是当前稳定版本；**不追 CycloneDX 2.0**（2026-08 公布路线、
+  秋季才发布，未稳定）。
+- SPDX 3.0 也能支持 SBOM，但 alpha.3 **不做双输出**（SPDX export 与
+  CycloneDX 2.0 列为 future）。
+
+### 7.2 数据来源边界（冻结，D74）：SBOM 描述 Artifact，不是"当前机器"
+
+**禁止**：扫描当前 node_modules、扫描当前 Git workspace、重新 pnpm resolve。
+
+**只消费**已经属于 artifact identity / build receipt 的材料：
+
+```text
+.dshpack
+   ↓
+artifact/staged lockfile（profile/pnpm-lock.yaml：packages map 的
+                          resolution.integrity / tarball）
+vendored packages（packages/*.tgz 内 package.json）
+embedded package metadata（profile/package.json、resolved/dependency-tree.json
+                          的 closure / localDeps / direct）
+dependency closure
+   ↓
+SBOM
+```
+
+**dependency edges（D73/D74）**：根组件 → direct deps（来自
+`resolved/dependency-tree.json`）；vendored 组件 → 其 artifact 内
+`package.json` 声明的 deps（ref 可解析时才输出，不做重新 resolve）。
+Components 回答"有哪些包"，dependencies 回答"谁依赖谁"。
+
+> 否则会重蹈 provenance 的问题：T0 构建 artifact → T1 workspace 变化 →
+> T2 生成 SBOM 描述的是 T2，而不是 artifact。
+
+### 7.3 目录布局（冻结）：SBOM 文档与 Signed Evidence Envelope 分离
+
+```text
+agent.dshpack.evidence/
+├── build-provenance/
+│   └── <statementDigest>.json
+├── sbom/
+│   └── <statementDigest>.json        ← Signed Evidence（证明"这份 SBOM 属于 artifact A"）
+└── documents/
+    └── <sbomDigest>.cdx.json         ← CycloneDX 1.7 文档（标准工具直接消费）
+```
+
+**不要把完整 CycloneDX 文档内嵌进 Evidence statement**（几千行 JSON），否则
+dependency / license / vulnerability scanner 与 SBOM viewer 消费起来都很别扭。
+Document 给标准工具，Envelope 证明归属。
+
+### 7.4 冻结决策（D73–D80）
+
+| # | 决策 |
+|---|------|
+| D73 | SBOM 使用标准格式，**不自创 BOM Schema**：CycloneDX 1.7 JSON（format/specVersion/mediaType 三要素），PURL 作为标准软件包身份 |
+| D74 | SBOM 必须描述 Artifact 而非"当前机器"：只消费 artifact/staged lockfile、vendored packages、embedded package metadata、dependency closure；**禁止**扫描当前 node_modules / Git workspace / 重新 resolve |
+| D75 | SBOM 自身必须有**独立 identity**：`sbomDigest`（deterministic canonical bytes）≠ artifact `contentHash`（A≠B 正常）；Signed Evidence Envelope `subject.contentHash=A`，statement 携带 format/specVersion/mediaType/sbomDigest=B，由 `dsh-pack:evidence:v1` 签名 |
+| D76 | Dependency Identity 按来源区别：registry → name/version/**PURL**/resolved/integrity（closure 已采集不丢弃）；file:/link:/vendored → name/version/sourceType/**contentDigest**（properties: `dsh-pack:source-type` / `dsh-pack:content-digest`）；**绝对机器路径禁止进入 SBOM**（防环境泄漏 + 保 reproducibility） |
+| D77 | npm lifecycle scripts 成为**显式供应链事实**：识别 preinstall/install/postinstall/prepare/prepublish/prepack/postpack；记录 existence + scriptDigest（`dsh-pack:npm-lifecycle:<name>` = `sha256:...`）；**不写 script 原文**（防绝对路径 / 凭据插值 / 私有 registry URL 泄漏） |
+| D78 | Native 只记录 **Indicator** 不推出结论：检测 binding.gyp / gypfile / node-gyp / prebuild / prebuildify / node-pre-gyp / os / cpu / optionalDependencies 中 native package；`nativeIndicator {detected, reasons}`；**不声明** runtime compatible/incompatible（兼容性留给 beta.1 Runtime Attestation） |
+| D79 | **不知道就是 UNKNOWN，禁止猜**：license 未声明 → UNKNOWN（不按 repo 外观猜、不联网补全）；resolved / lifecycle / native 元数据不可得 → unknown |
+| D80 | SBOM 必须 **deterministic**：相同 .dshpack → byte-for-byte identical + sbomDigest identical；components/dependencies/properties/hashes 全排序；UTF-8 canonical JSON；**无 random serialNumber、无当前时间戳** |
+
+### 7.5 命令面（冻结）
+
+```text
+/pack evidence sbom <file.dshpack> --key <private.pem> [--signer <name>] [--out <dir>]
+    → documents/<sbomDigest>.cdx.json（CycloneDX 1.7 文档，deterministic）
+    → sbom/<statementDigest>.json（Signed Evidence，subject = 重算 contentHash）
+
+验证复用统一入口：
+/pack evidence verify <sbom-envelope.json> --against <file.dshpack> [--key-id <sha256hex>]
+```
+
+不新增 `/pack sbom inspect | diff | audit`（留后续）。
+
+### 7.6 验收判据（冻结，S0–S13）
+
+| # | 场景 | 预期 |
+|---|------|------|
+| S0 | 相同 artifact 生成两次 SBOM | byte identical + sbomDigest identical |
+| S1 | subject.contentHash | == 实际 artifact 重算值 |
+| S2 | registry dependency | name/version/purl/resolved/integrity 正确 |
+| S3 | file:/link:/vendored dependency | contentDigest 存在 |
+| S4 | local dep 路径不变、内容改变 | contentDigest / SBOM digest 改变 |
+| S5 | license 已声明 / 未声明 | 正确记录 / UNKNOWN |
+| S6 | prepare/install/postinstall 存在 | lifecycle indicator 存在 |
+| S7 | native package | native indicator 存在，**不产生 compatibility 结论** |
+| S8 | 篡改 .cdx.json | sbomDigest mismatch → Evidence FAIL |
+| S9 | Artifact A 的 SBOM 挂到 Artifact B | subject verification FAIL |
+| S10 | artifact 构建后修改当前 node_modules/workspace | 对 artifact 重新生成 SBOM **不变**（只消费 artifact） |
+| S11 | SBOM 不出现绝对机器路径 | 无 `/home/...`、`C:\...` |
+| S12 | build-provenance + sbom | 同一 evidence collection 共存、不覆盖 |
+| S13 | configHash 相同、dependency/code 不同 | SBOM/contentHash 不同 |
+
+### 7.7 明确不做（scope guard）
+
+```text
+❌ vulnerability scanning / CVE lookup / license policy
+❌ capability policy / runtime permissions
+❌ trust.yaml v2 / OCI referrers
+❌ SPDX exporter / CycloneDX 2.0
+```
+
+SBOM 只回答：**"这个 artifact 里面/依赖了什么？"**
+不回答："它安全吗？它能运行吗？我应该信任吗？"（后续层职责）
+
 ---
 
-*本文档 v0.5.0 设计阶段定稿（2026-08-30）。本阶段冻结 D64–D72（+ H1–H3）；
+*本文档 v0.5.0 设计阶段定稿（2026-08-30）。本阶段冻结 D64–D80（+ H1–H3）；
 v0.4.2 的 D41–D63 不受影响。实现顺序：DESIGN 冻结（本文）→ `src/evidence/`
-模块（envelope / service / build-record）→ pack 构建时采集 → CLI 接线 →
-P0–P12 负例测试 → typecheck + vitest 全绿 → CHANGELOG。*
+模块（envelope / service / build-record / sbom）→ pack 构建时采集 → CLI 接线 →
+P0–P12 + S0–S13 负例测试 → typecheck + vitest 全绿 → CHANGELOG。*

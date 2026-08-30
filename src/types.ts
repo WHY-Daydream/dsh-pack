@@ -18,6 +18,14 @@ export interface PackOptions {
   allowNonportable?: boolean
   /** v0.2 placeholder. */
   portable?: boolean
+  /** v0.5: capture + write a build receipt sidecar (always written; D68–D71). */
+  provenance?: boolean
+  /** v0.5: sign a `build-provenance` Evidence at build time with this private key (D68 dirty FAIL unless allowDirty). */
+  evidenceKey?: string
+  /** v0.5: allow signing provenance from a dirty tree — records sourceTreeDigest (D68). */
+  allowDirty?: boolean
+  /** v0.5: display signer label for the signed evidence (display only). */
+  signer?: string
 }
 
 /** Install service options (DESIGN.md Appendix A, frozen v0.1). */
@@ -42,6 +50,10 @@ export interface PackResult {
   warnings: Warning[]
   /** Number of high-confidence secrets redacted. */
   redacted: number
+  /** v0.5: path of the written build receipt sidecar (D68–D71), if captured. */
+  receipt?: string
+  /** v0.5: path of the signed `build-provenance` Evidence, when --evidence-key. */
+  evidence?: string
 }
 
 /** Summary returned by `/pack inspect`. */
@@ -223,4 +235,132 @@ export interface KeygenResult {
   privateKey: string
   publicKey: string
   keyId: string
+}
+
+// --- v0.5 Signed Evidence Envelope (DESIGN-v0.5.0.md §3, D64–D67) ---
+
+/**
+ * Module-level input to `signEvidence` (src/evidence/envelope.ts): the
+ * evidence payload is authenticated via a canonical statement digest, and the
+ * signature covers the domain-separated canonical object
+ * `{domain, schemaVersion, type, subject.contentHash, statementDigest}` —
+ * NOT the raw envelope JSON (D66; domain = `dsh-pack:evidence:v1` so the same
+ * key signing other protocols can never collide).
+ */
+export interface EvidenceSignInput {
+  /** Evidence class, e.g. `build-provenance` / `sbom` / `runtime-attestation` (D64). */
+  type: string
+  /** The immutable artifact anchor this evidence is ABOUT (D64). */
+  subjectContentHash: string
+  /** The evidence payload (opaque to the envelope; hashed canonically). */
+  statement: unknown
+  /** Path to the private key PEM (pkcs8). */
+  keyPath: string
+  /** Optional human-readable signer label (display only — trust identity is keyId). */
+  signer?: string
+}
+
+/** v0.5 evidence signing block — self-contained like SignatureInfo (D66). */
+export interface EvidenceSigning {
+  algorithm: 'ed25519'
+  /**
+   * sha256 of the public key DER (SPKI) — display + future policy trust anchor.
+   * Verification ALWAYS recomputes this from the embedded public key and
+   * rejects mismatches: policy consumes verifiedKeyId, never a claimed keyId.
+   */
+  keyId: string
+  /** Public key PEM (SPKI) — self-contained verification. */
+  publicKey: string
+  /** base64 ed25519 signature over the domain-separated `evidenceSigningInput(...)`. */
+  signature: string
+  createdAt: string
+}
+
+/**
+ * v0.5 Signed Evidence Envelope (DESIGN-v0.5.0.md §3): a standalone,
+ * self-authenticating statement ABOUT an immutable artifact. `subject.contentHash`
+ * binds the evidence to exactly one artifact (D64); `statementDigest` anchors the
+ * payload; the signature covers the canonical `{type, subject, statementDigest}`
+ * triple (D66). Evidence is a SEPARATE object — it never enters the artifact
+ * contentHash and never touches the existing Artifact Signature anchor (D65).
+ */
+export interface EvidenceEnvelope {
+  schemaVersion: 1
+  /** Evidence class, e.g. `build-provenance` / `sbom` / `runtime-attestation` (D64). */
+  type: string
+  subject: { contentHash: string }
+  /** The evidence payload (opaque to the envelope). */
+  statement: unknown
+  /** `sha256:` + hex over `canonicalJson(statement)` — the statement anchor. */
+  statementDigest: string
+  signing: EvidenceSigning
+}
+
+/** Options for `/pack evidence sign` (v0.5). */
+export interface EvidenceSignOptions {
+  /** Evidence class (D64). */
+  type: string
+  /** The evidence payload (object) — canonicalized, hashed and signed. */
+  statement: unknown
+  /** Path to the private key PEM (pkcs8). */
+  key: string
+  /** Optional human-readable signer label (display only). */
+  signer?: string
+  /** Output directory (default: alongside the input pack). */
+  outDir?: string
+}
+
+/** Result of `/pack evidence sign`. */
+export interface EvidenceSignResult {
+  /** Written sidecar path `<name>.dshpack.evidence.json`. */
+  file: string
+  /** Signer fingerprint (sha256 of the public key DER). */
+  keyId: string
+  /** The immutable subject anchor (D64). */
+  contentHash: string
+  type: string
+  statementDigest: string
+  signer?: string
+}
+
+/** Result of `/pack evidence verify`. */
+export interface EvidenceVerifyResult {
+  ok: boolean
+  keyId: string
+  type: string
+  /** The envelope's declared subject anchor. */
+  subject: string
+  statementDigest: string
+  /** Ordered failure reasons (empty when ok). */
+  errors: string[]
+}
+
+/** Options for `/pack evidence provenance` (v0.5 alpha.2, D68–D71). */
+export interface ProvenanceSignOptions {
+  /** Path to the private key PEM (pkcs8). */
+  key: string
+  /** Allow signing from a dirty tree — uses the recorded sourceTreeDigest (D68). */
+  allowDirty?: boolean
+  /** Optional human-readable signer label (display only). */
+  signer?: string
+  /** Output directory (default: alongside the input pack). */
+  outDir?: string
+}
+
+/**
+ * Result of `/pack evidence provenance`: the build-provenance Evidence signed
+ * from the pack's BUILD-TIME receipt (never from the current repo state, D68).
+ */
+export interface ProvenanceSignResult extends EvidenceSignResult {
+  /** Full git commit SHA recorded at build time (D68), if the site was a git repo. */
+  gitCommit?: string
+  /** Whether the build tree was dirty at pack time (D68). */
+  dirty: boolean
+  /** sourceTreeDigest present when dirty (D68). */
+  sourceTreeDigest?: string
+  /**
+   * D72: this result is always a POST-BUILD endorsement — the unsigned
+   * receipt is re-signed here, so it is never marked `build-time`.
+   */
+  captureMode: 'post-build-receipt'
 }

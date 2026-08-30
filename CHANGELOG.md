@@ -5,6 +5,35 @@
 
 ## [Unreleased]
 
+- **v0.5.0-alpha.2（Build Provenance v2，D68–D72 冻结，DESIGN-v0.5.0.md §6）**：
+  provenance 在 `/pack` **构建现场**采集，绝不事后根据当前 Git HEAD 推测。
+  新增 `src/evidence/build-record.ts`：Git source（完整 commit SHA / dirty /
+  sourceTreeDigest，D68）、materials digests（profile manifest / bundle patch /
+  source 与 artifact lockfile 分开 / canonical dependency closure 带 file:link:
+  contentDigest，D69）、environment（D71）。`/pack` 总是写
+  `<name>.dshpack.build-receipt.json`；`--evidence-key` 构建时签名
+  build-provenance Evidence（dirty 默认 FAIL，`--allow-dirty` 记录
+  sourceTreeDigest）；`/pack evidence provenance <file>` 只消费 receipt
+  （校验 schema + subject == 实际 contentHash，篡改拒绝）。**D72 origin
+  语义**：`/pack --evidence-key` 构建时签名 = build-time attestation
+  （`capture.mode=build-time`）；`/pack evidence provenance` 消费未签名
+  receipt 只能标记 post-build-receipt（endorsement），不得冒充构建瞬间证明；
+  receipt 及其 digest 不进 artifact contentHash。P0–P12 测试矩阵
+  （clean/dirty/commit 切换/lockfile 变化/file-link contentDigest/configHash≠
+  code identity/statement tamper/subject swap/modified receipt 只能
+  endorsement/build-time attestation 不受后续 receipt 修改影响）。
+- **v0.5.0-alpha.1（Evidence Foundation，D64–D67 + Protocol Hardening H1–H3 冻结，
+  DESIGN-v0.5.0.md）**：Signed Evidence Envelope（`src/evidence/`）——独立证据对象，
+  subject 绑定 immutable contentHash（D64）、Evidence 与 Artifact 分离不进
+  contentHash 也不改 Artifact Signature anchor（D65）、domain-separated
+  canonical 签名认证（D66，`domain="dsh-pack:evidence:v1"`）、Policy 只消费
+  已验证 Evidence（D67 前置）。Protocol Hardening：H1 domain separation
+  （跨协议签名不可重放）、H2 verifiedKeyId（keyId 永远从内嵌 public key 重算，
+  绝不消费声明值）、H3 Evidence Collection（`<name>.dshpack.evidence/<type>/
+  <statementDigest hex>.json`，同 contentHash 可绑定 N 份证据、禁止覆盖）。
+  命令：`/pack evidence sign|verify`（`--against` / `--key-id`）。负例矩阵：
+  tamper / subject substitution / wrong signer / stale evidence / cross-protocol
+  replay / overwrite refusal。
 - **v0.4.2 剩余**：image lock（`/pack image lock <ref>` → 真实 manifestDigest +
   dsh-lock.json）；trust.yaml（registries 级 requireSignature/requireTrusted/
   trustedKeys）；local image prune（mark-and-sweep reachability GC：

@@ -7,14 +7,16 @@
  */
 
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+import { readFileSync } from 'node:fs'
 import type { DefaultImageService } from './image/service.ts'
+import type { EvidenceService } from './evidence/service.ts'
 import type { PackagerService } from './service.ts'
 import { PackError } from './service.ts'
 import type { PackDiff, PackOptions } from './types.ts'
 
 /** A parsed /pack invocation. */
 export interface ParsedInvocation {
-  sub: 'pack' | 'inspect' | 'verify' | 'install' | 'diff' | 'sign' | 'keygen' | 'image' | 'run' | 'push' | 'pull'
+  sub: 'pack' | 'inspect' | 'verify' | 'install' | 'diff' | 'sign' | 'keygen' | 'evidence' | 'image' | 'run' | 'push' | 'pull'
   positionals: string[]
   flags: Record<string, string | boolean>
 }
@@ -25,7 +27,8 @@ export function parseCommand(rawInput: string): ParsedInvocation {
   let sub: ParsedInvocation['sub'] = 'pack'
   if (tokens[0] === 'inspect' || tokens[0] === 'verify' || tokens[0] === 'install'
     || tokens[0] === 'diff' || tokens[0] === 'sign' || tokens[0] === 'keygen'
-    || tokens[0] === 'image' || tokens[0] === 'run' || tokens[0] === 'push' || tokens[0] === 'pull') {
+    || tokens[0] === 'evidence' || tokens[0] === 'image' || tokens[0] === 'run'
+    || tokens[0] === 'push' || tokens[0] === 'pull') {
     sub = tokens[0]
     tokens.shift()
   }
@@ -33,7 +36,7 @@ export function parseCommand(rawInput: string): ParsedInvocation {
   const flags: Record<string, string | boolean> = {}
   const boolFlags = new Set([
     'strict', 'allow-secrets', 'allow-nonportable', 'force', 'ignore-runtime-version', 'json', 'portable',
-    'require-signature', 'require-trusted',
+    'require-signature', 'require-trusted', 'provenance', 'allow-dirty',
   ])
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i] as string
@@ -76,6 +79,9 @@ function renderPackSummary(invocation: ParsedInvocation, outcome: Awaited<Return
   lines.push(`✓ ${outcome.redacted} secrets redacted`)
   for (const warning of outcome.warnings) lines.push(`⚠ [${warning.code}] ${warning.message}`)
   lines.push('✓ configuration validated', '', `Created: ${outcome.file}`)
+  if (outcome.receipt !== undefined) lines.push(`  build receipt: ${outcome.receipt}`)
+  // D72: `/pack --evidence-key` signs AT the build site — build-time attestation.
+  if (outcome.evidence !== undefined) lines.push(`  build-time provenance attestation: ${outcome.evidence}`)
   return lines.join('\n')
 }
 
@@ -163,6 +169,7 @@ export async function runCommand(
   invocation: ParsedInvocation,
   packager: PackagerService,
   images?: DefaultImageService,
+  evidence?: EvidenceService,
 ): Promise<CommandResult> {
   try {
     switch (invocation.sub) {
@@ -173,8 +180,12 @@ export async function runCommand(
           allowSecrets: invocation.flags['allow-secrets'] === true,
           allowNonportable: invocation.flags['allow-nonportable'] === true,
           portable: invocation.flags['portable'] === true,
+          provenance: invocation.flags['provenance'] === true,
+          allowDirty: invocation.flags['allow-dirty'] === true,
         }
         if (typeof invocation.flags['out'] === 'string') opts.outDir = invocation.flags['out']
+        if (typeof invocation.flags['evidence-key'] === 'string') opts.evidenceKey = invocation.flags['evidence-key']
+        if (typeof invocation.flags['signer'] === 'string') opts.signer = invocation.flags['signer']
         const outcome = await packager.pack(opts)
         return { kind: 'success', text: renderPackSummary(invocation, outcome) }
       }
@@ -263,6 +274,101 @@ export async function runCommand(
         return {
           kind: 'success',
           text: `✓ ed25519 keypair generated\n  Key fingerprint: SHA256:${result.keyId}\n  private: ${result.privateKey} (chmod 600)\n  public:  ${result.publicKey}`,
+        }
+      }
+      case 'evidence': {
+        if (evidence === undefined) return { kind: 'error', text: '✗ evidence commands unavailable (evidence service not provided)' }
+        const evidenceSub = invocation.positionals[0]
+        const args = invocation.positionals.slice(1)
+        switch (evidenceSub) {
+          case 'sign': {
+            const file = args[0]
+            const type = typeof invocation.flags['type'] === 'string' ? invocation.flags['type'] : undefined
+            const statementFile = typeof invocation.flags['statement-file'] === 'string' ? invocation.flags['statement-file'] : undefined
+            const key = typeof invocation.flags['key'] === 'string' ? invocation.flags['key'] : undefined
+            if (file === undefined || type === undefined || statementFile === undefined || key === undefined) {
+              return {
+                kind: 'error',
+                text: '✗ usage: /pack evidence sign <file.dshpack> --type <type> --statement-file <statement.json> --key <private.pem> [--signer <name>] [--out <dir>]',
+              }
+            }
+            let statement: unknown
+            try {
+              statement = JSON.parse(readFileSync(statementFile, 'utf8'))
+            } catch {
+              return { kind: 'error', text: `✗ cannot parse statement file ${statementFile} as JSON` }
+            }
+            const signer = typeof invocation.flags['signer'] === 'string' ? invocation.flags['signer'] : undefined
+            const outDir = typeof invocation.flags['out'] === 'string' ? invocation.flags['out'] : undefined
+            const result = await evidence.sign(file, {
+              type,
+              statement,
+              key,
+              ...(signer !== undefined ? { signer } : {}),
+              ...(outDir !== undefined ? { outDir } : {}),
+            })
+            const lines = [
+              `✓ evidence signed: ${result.file}`,
+              `  subject (contentHash): ${result.contentHash}`,
+              `  type: ${result.type}`,
+              `  statementDigest: ${result.statementDigest}`,
+              `  signer fingerprint: SHA256:${result.keyId}`,
+              ...(result.signer !== undefined ? [`  signer: ${result.signer} (display label only — trust identity is the fingerprint)`] : []),
+            ]
+            return { kind: 'success', text: lines.join('\n') }
+          }
+          case 'verify': {
+            const file = args[0]
+            if (file === undefined) {
+              return { kind: 'error', text: '✗ usage: /pack evidence verify <evidence.json> [--against <file.dshpack>] [--key-id <sha256hex>]' }
+            }
+            const against = typeof invocation.flags['against'] === 'string' ? invocation.flags['against'] : undefined
+            const keyId = typeof invocation.flags['key-id'] === 'string' ? invocation.flags['key-id'] : undefined
+            const result = await evidence.verify(file, {
+              ...(against !== undefined ? { against } : {}),
+              ...(keyId !== undefined ? { keyId } : {}),
+            })
+            const lines = [
+              result.ok ? '✓ evidence VERIFIED' : '✗ evidence verification FAILED',
+              `  subject (contentHash): ${result.subject}`,
+              `  type: ${result.type}`,
+              `  statementDigest: ${result.statementDigest}`,
+              `  signer fingerprint: SHA256:${result.keyId}`,
+            ]
+            if (!result.ok) lines.push(`  errors: ${result.errors.join('; ')}`)
+            return { kind: result.ok ? 'success' : 'error', text: lines.join('\n') }
+          }
+          case 'provenance': {
+            const file = args[0]
+            const key = typeof invocation.flags['key'] === 'string' ? invocation.flags['key'] : undefined
+            if (file === undefined || key === undefined) {
+              return {
+                kind: 'error',
+                text: '✗ usage: /pack evidence provenance <file.dshpack> --key <private.pem> [--allow-dirty] [--signer <name>] [--out <dir>]',
+              }
+            }
+            const signer = typeof invocation.flags['signer'] === 'string' ? invocation.flags['signer'] : undefined
+            const outDir = typeof invocation.flags['out'] === 'string' ? invocation.flags['out'] : undefined
+            const result = await evidence.provenance(file, {
+              key,
+              ...(invocation.flags['allow-dirty'] === true ? { allowDirty: true } : {}),
+              ...(signer !== undefined ? { signer } : {}),
+              ...(outDir !== undefined ? { outDir } : {}),
+            })
+            const lines = [
+              `✓ post-build provenance endorsement signed: ${result.file}`,
+              `  origin: ${result.captureMode} (endorsement — NOT a build-time attestation; the unsigned receipt could have been edited after the build, D72)`,
+              `  subject (contentHash): ${result.contentHash}`,
+              `  statementDigest: ${result.statementDigest}`,
+              `  git commit (recorded at build time): ${result.gitCommit ?? 'n/a (non-git build site)'}`,
+              `  dirty: ${String(result.dirty)}${result.sourceTreeDigest !== undefined ? ` (sourceTreeDigest ${result.sourceTreeDigest})` : ''}`,
+              `  signer fingerprint: SHA256:${result.keyId}`,
+              ...(result.signer !== undefined ? [`  signer: ${result.signer} (display label only — trust identity is the fingerprint)`] : []),
+            ]
+            return { kind: 'success', text: lines.join('\n') }
+          }
+          default:
+            return { kind: 'error', text: `✗ unknown evidence subcommand ${JSON.stringify(evidenceSub)} (sign | verify | provenance)` }
         }
       }
       case 'image': {
@@ -418,13 +524,14 @@ export async function runCommand(
   }
 }
 
-/** Command handler bound to a packager + optional image service. */
+/** Command handler bound to a packager + optional image/evidence services. */
 export function makeHandler(
   packager: PackagerService,
   images?: DefaultImageService,
+  evidence?: EvidenceService,
 ): (invocation: CommandInvocation) => Promise<CommandResult> {
   return async (invocation) => {
     const parsed = parseCommand(invocation.rawInput)
-    return runCommand(parsed, packager, images)
+    return runCommand(parsed, packager, images, evidence)
   }
 }

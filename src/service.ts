@@ -22,6 +22,8 @@ import { inspectPack } from './inspect.ts'
 import { installPack } from './install.ts'
 import { diffPacks } from './diff.ts'
 import { signPackFile, generateKeypair } from './sign.ts'
+import { buildReceiptPath, captureBuildRecord } from './evidence/build-record.ts'
+import { DefaultEvidenceService } from './evidence/service.ts'
 import { loadProfileDir, resolveDshHome, resolveInstallAnchor } from './profile-reader.ts'
 import { prettyJson, todayStamp, utcNowIso } from './canonical.ts'
 import type {
@@ -60,6 +62,8 @@ export interface PackagerContext {
   installedDshVersion?: string
   /** Override the packager version (tests). */
   packagerVersion?: string
+  /** v0.5: build site for git provenance capture (D68; default process.cwd()). */
+  buildCwd?: string
 }
 
 /** Read the installed dsh version from the install anchor (D15). */
@@ -229,10 +233,57 @@ export class DefaultPackager implements PackagerService {
     ]
     const final = await buildTarGz(allEntries)
 
+    // --- v0.5 build receipt + optional build-provenance evidence (D68–D71) ---
+    // The receipt records what this artifact WAS built from, captured in the
+    // build site NOW — never inferred later from a changed repo state.
+    const receipt = await captureBuildRecord({
+      cwd: this.context.buildCwd ?? process.cwd(),
+      contentHash: built.contentHash,
+      profileDir: profile.dir,
+      ...(profile.patchText !== undefined ? { bundlePatchText: profile.patchText } : {}),
+      ...(stagedLockfile !== undefined ? { stagedLockfile } : {}),
+      localDeps: depTree.localDeps,
+      dshPackVersion: this.context.packagerVersion ?? '0.1.0',
+      dshVersion,
+      nodeVersion: process.versions.node,
+      pnpmVersion,
+      os: process.platform,
+      arch: process.arch,
+    })
+    // D68 gate BEFORE any output is written: a dirty tree must not claim a
+    // commit that does not describe the actual inputs — default FAIL;
+    // --allow-dirty records sourceTreeDigest instead of a false claim.
+    if (opts.evidenceKey !== undefined && receipt.source.dirty && opts.allowDirty !== true) {
+      throw new PackError(
+        'provenance FAIL: working tree is dirty; commit first or use --allow-dirty (records sourceTreeDigest instead of a false claim)',
+        3,
+      )
+    }
+
     const outDir = opts.outDir ?? process.cwd()
     const file = join(outDir, `${opts.profile}-${todayStamp()}.dshpack`)
     writeFileSync(file, final.buffer)
-    return { file, profile: opts.profile, manifest, warnings, redacted: scan.redacted }
+    const receiptFile = buildReceiptPath(file)
+    writeFileSync(receiptFile, prettyJson(receipt))
+    let evidenceFile: string | undefined
+    if (opts.evidenceKey !== undefined) {
+      const evidenceService = new DefaultEvidenceService()
+      evidenceFile = (await evidenceService.sign(file, {
+        type: 'build-provenance',
+        statement: receipt,
+        key: opts.evidenceKey,
+        ...(opts.signer !== undefined ? { signer: opts.signer } : {}),
+      })).file
+    }
+    return {
+      file,
+      profile: opts.profile,
+      manifest,
+      warnings,
+      redacted: scan.redacted,
+      receipt: receiptFile,
+      ...(evidenceFile !== undefined ? { evidence: evidenceFile } : {}),
+    }
   }
 
   private async detectPnpmVersion(): Promise<string> {

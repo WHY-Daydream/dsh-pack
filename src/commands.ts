@@ -367,8 +367,35 @@ export async function runCommand(
             ]
             return { kind: 'success', text: lines.join('\n') }
           }
+          case 'sbom': {
+            const file = args[0]
+            const key = typeof invocation.flags['key'] === 'string' ? invocation.flags['key'] : undefined
+            if (file === undefined || key === undefined) {
+              return {
+                kind: 'error',
+                text: '✗ usage: /pack evidence sbom <file.dshpack> --key <private.pem> [--signer <name>] [--out <dir>]',
+              }
+            }
+            const signer = typeof invocation.flags['signer'] === 'string' ? invocation.flags['signer'] : undefined
+            const outDir = typeof invocation.flags['out'] === 'string' ? invocation.flags['out'] : undefined
+            const result = await evidence.sbom(file, {
+              key,
+              ...(signer !== undefined ? { signer } : {}),
+              ...(outDir !== undefined ? { outDir } : {}),
+            })
+            const lines = [
+              `✓ SBOM Evidence signed: ${result.file}`,
+              `  SBOM: CycloneDX 1.7, Components: ${result.componentCount}`,
+              `  Document digest: ${result.sbomDigest}`,
+              `  Document: ${result.documentFile}`,
+              `  Subject (contentHash): ${result.contentHash}`,
+              `  signer fingerprint: SHA256:${result.keyId}`,
+              ...(result.signer !== undefined ? [`  signer: ${result.signer} (display label only — trust identity is the fingerprint)`] : []),
+            ]
+            return { kind: 'success', text: lines.join('\n') }
+          }
           default:
-            return { kind: 'error', text: `✗ unknown evidence subcommand ${JSON.stringify(evidenceSub)} (sign | verify | provenance)` }
+            return { kind: 'error', text: `✗ unknown evidence subcommand ${JSON.stringify(evidenceSub)} (sign | verify | provenance | sbom)` }
         }
       }
       case 'image': {

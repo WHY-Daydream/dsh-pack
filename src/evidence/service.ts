@@ -30,9 +30,12 @@ import { prettyJson } from '../canonical.ts'
 import { PackError } from '../service.ts'
 import { signEvidence, verifyEvidenceEnvelope, verifyEvidenceSigner, verifyEvidenceSubject } from './envelope.ts'
 import { buildReceiptPath, validateBuildRecord } from './build-record.ts'
+import {
+  generateSbomFromPack, SBOM_EVIDENCE_TYPE, SBOM_FORMAT, SBOM_MEDIA_TYPE, SBOM_SPEC_VERSION,
+} from './sbom.ts'
 import type {
   EvidenceEnvelope, EvidenceSignOptions, EvidenceSignResult, EvidenceVerifyResult,
-  ProvenanceSignOptions, ProvenanceSignResult,
+  ProvenanceSignOptions, ProvenanceSignResult, SbomSignOptions, SbomSignResult,
 } from '../types.ts'
 
 export interface EvidenceVerifyOptions {
@@ -53,6 +56,11 @@ export interface EvidenceService {
    * (D68): consumes only what `/pack` recorded — never the current git HEAD.
    */
   provenance(file: string, opts: ProvenanceSignOptions): Promise<ProvenanceSignResult>
+  /**
+   * Generate a CycloneDX 1.7 SBOM from the artifact's own materials (D74),
+   * write the standalone document, and sign the `sbom` Evidence (D75).
+   */
+  sbom(file: string, opts: SbomSignOptions): Promise<SbomSignResult>
 }
 
 /** Default evidence service: pack contentHash is the immutable subject (D64). */
@@ -206,6 +214,54 @@ export class DefaultEvidenceService implements EvidenceService {
       dirty: receipt.source.dirty,
       ...(receipt.source.sourceTreeDigest !== undefined ? { sourceTreeDigest: receipt.source.sourceTreeDigest } : {}),
       captureMode: 'post-build-receipt' as const,
+    }
+  }
+
+  /**
+   * Generate the CycloneDX 1.7 SBOM from the artifact's OWN materials (D74 —
+   * never the current node_modules / workspace), write the standalone
+   * document to `documents/<sbomDigest>.cdx.json` (D73/D75), and sign the
+   * `sbom` Evidence: subject = actual contentHash, statement carries
+   * format/specVersion/mediaType + sbomDigest (D75).
+   */
+  async sbom(file: string, opts: SbomSignOptions): Promise<SbomSignResult> {
+    if (!existsSync(file)) throw new PackError(`pack file not found: ${file}`, 1)
+    const contentHash = await computePackContentHash(readFileSync(file))
+    const { document, digest, bom } = await generateSbomFromPack(readFileSync(file))
+    const digestHex = digest.slice('sha256:'.length)
+
+    // standalone document for standard SBOM tooling (D73/D75)
+    const outDir = opts.outDir ?? dirname(file)
+    const collectionRoot = join(outDir, `${basename(file, '.dshpack')}.dshpack.evidence`)
+    const documentFile = join(collectionRoot, 'documents', `${digestHex}.cdx.json`)
+    mkdirSync(dirname(documentFile), { recursive: true })
+    if (existsSync(documentFile)) {
+      const existing = readFileSync(documentFile, 'utf8')
+      if (existing !== document) {
+        throw new PackError(`sbom document already exists (refusing to overwrite): ${documentFile}`, 1)
+      }
+    } else {
+      writeFileSync(documentFile, document)
+    }
+
+    // signed Evidence envelope bound to the artifact (D75)
+    const result = await this.sign(file, {
+      type: SBOM_EVIDENCE_TYPE,
+      statement: {
+        format: SBOM_FORMAT,
+        specVersion: SBOM_SPEC_VERSION,
+        mediaType: SBOM_MEDIA_TYPE,
+        sbomDigest: { algorithm: 'sha256', value: digestHex },
+      },
+      key: opts.key,
+      ...(opts.signer !== undefined ? { signer: opts.signer } : {}),
+      ...(opts.outDir !== undefined ? { outDir: opts.outDir } : {}),
+    })
+    return {
+      ...result,
+      documentFile,
+      sbomDigest: digest,
+      componentCount: bom.components.length,
     }
   }
 }

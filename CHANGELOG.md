@@ -5,6 +5,18 @@
 
 ## [Unreleased]
 
+- **v0.5.0-alpha.3（SBOM Evidence，D73–D80 冻结，DESIGN-v0.5.0.md §7）**：
+  CycloneDX 1.7 JSON 为唯一 canonical SBOM format（D73）；SBOM 只消费
+  artifact/staged lockfile + vendored + embedded metadata + dependency
+  closure，禁止扫描当前 node_modules / Git workspace / 重新 resolve（D74）；
+  SBOM 文档（`documents/<sbomDigest>.cdx.json`）与 Signed Evidence
+  （`sbom/<statementDigest>.json`，subject=contentHash，statement 携带
+  sbomDigest）分离（D75/D73）；registry 依赖带 PURL/resolved/integrity、
+  file:/link:/vendored 带 contentDigest 且无绝对机器路径（D76）；lifecycle
+  scripts 记录 existence+digest（D77）；native 只记 indicator 不推
+  compatibility（D78）；license 缺失一律 UNKNOWN（D79）；deterministic
+  byte-identical（D80）。S0–S13 测试矩阵。明确不做 vulnerability/CVE/
+  license policy/trust.yaml v2/OCI/SPDX/CycloneDX 2.0。
 - **v0.5.0-alpha.2（Build Provenance v2，D68–D72 冻结，DESIGN-v0.5.0.md §6）**：
   provenance 在 `/pack` **构建现场**采集，绝不事后根据当前 Git HEAD 推测。
   新增 `src/evidence/build-record.ts`：Git source（完整 commit SHA / dirty /

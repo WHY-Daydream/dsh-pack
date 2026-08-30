@@ -5,7 +5,28 @@
 
 ## [Unreleased]
 
-- **v0.5.0-beta.1（Runtime Attestation，D89–D97 冻结，DESIGN-v0.5.0.md §9）**：
+- **v0.5.0-beta.2（trust.yaml v2 / Trust Policy Binding，D100–D111 冻结，DESIGN-v0.5.0.md §10）**：
+  只消费已验证 Evidence（D100，D67 落地）；requireEvidence（provenance.origin
+  build-time / sbom / runtimeAttestation required+coverage），缺失即 DENY
+  （D101）；coverage 消费（complete > partial > unknown，D102）；runtime matrix
+  是兼容性门槛不是身份（D103）；capabilities.denyObserved 只消费 observed
+  （D104）；source.allowedRepositories（D105）；DENY 显式可审计的 16 步步骤链，
+  artifact trust 与各 Evidence issuer trust 分开记录（D106）；v1 兼容（D107）；
+  CLI 只能收紧（D108）。**Evidence Signature VALID ≠ Evidence Issuer TRUSTED**：
+  每类 required Evidence 需 per-type trustedKeys（或规则级 evidenceTrustedKeys
+  回退），缺配置 fail-closed DENY，artifact trustedKeys 绝不默认为 evidence
+  信任（Release Key ≠ Builder Key ≠ Attestor Key，D109）；候选 Evidence 选择
+  deterministic + ambiguity fail-closed：0 trusted 候选 DENY，>1 且 statement/
+  document 不等价 DENY AMBIGUOUS，禁 first/latest wins（D110）；Runtime
+  Attestation 绑定当前执行目标：attested OS/arch exact match 当前
+  process.platform/process.arch 且须在 policy runtime matrix 内，第一版
+  exact match 不猜跨平台兼容性（D111）。T0–T15 测试矩阵（North-Star：valid
+  signature + forbidden capability → DENY；contentHash 同 + evidence 篡改 →
+  DENY；trusted + attested env ≠ 当前 target → DENY；untrusted evidence
+  issuer → DENY UNTRUSTED_EVIDENCE_ISSUER）。明确不做：rc.1 供应链负例矩阵、
+  OCI、vulnerability/CVE/license policy、Evidence digest pinning、latest
+  evidence、跨平台兼容性推断。
+- **v0.5.0-beta.1（Runtime Attestation，D89–D99 冻结，DESIGN-v0.5.0.md §9）**：
   冷启 seam 调研结论：harness `boot()`（dsh-app-boot）→ cordis Context，cold
   boot 后从服务注册表 seam 收集 observed capabilities（不引入 OS-level
   tracing）。subject 绑定实际 contentHash（D89）；Observed 与 Declared 分离并

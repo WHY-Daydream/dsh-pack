@@ -246,7 +246,7 @@ Evidence 被篡改
 | v0.5.0-alpha.3（本阶段） | **SBOM Evidence**（D73–D80 冻结，§7）：CycloneDX 1.7 JSON canonical；只消费 artifact closure（禁扫当前机器）；独立文档 + signed envelope；deterministic；UNKNOWN 语义 |
 | v0.5.0-alpha.4（本阶段） | **Declared Capability Manifest**（D81–D88 冻结，§8）：纯 artifact inspection，只声明"能做什么"；Observed 归 beta.1 |
 | v0.5.0-beta.1（本阶段） | **Runtime Attestation**（D89–D97 冻结，§9）：disposable isolated cold boot + observed capabilities + declared-vs-observed diff + cleanup 证据；effects 第一版 NOT_PROBED，Phase B 受控 probe 后半段 |
-| v0.5.0-beta.2 | trust.yaml v2（requireEvidence / runtime matrix / capability policy，消费 declared/observed diff 后 DENY） |
+| v0.5.0-beta.2（本阶段） | **trust.yaml v2 / Trust Policy Binding**（D100–D111 冻结，§10）：只消费已验证 + 可信签发方 + 绑定当前执行目标的 Evidence；requireEvidence（provenance/sbom/runtimeAttestation+coverage+trustedKeys）；runtime matrix；capabilities.denyObserved；16 步 DENY 链 |
 | v0.5.0-rc.1 | 供应链负例矩阵（cache / latest / prepare / native / tampering / dependency re-resolution / cross-platform） |
 | v0.5.0 | OCI Evidence Distribution（provenance/sbom/attestation 作为 subject 指向 artifact 的独立对象） |
 
@@ -257,17 +257,18 @@ Evidence 被篡改
 - D73–D80：SBOM Evidence（§7，已冻结，v0.5.0-alpha.3）
 - D81–D88：Declared Capability Manifest（§8，已冻结，v0.5.0-alpha.4）
 - D89–D99：Runtime Attestation（§9，已冻结，v0.5.0-beta.1）
-- 后续阶段决策（trust.yaml v2）：阶段开始前另行冻结
+- D100–D111：trust.yaml v2 / Trust Policy Binding（§10，已冻结，v0.5.0-beta.2）
+- 后续阶段决策（rc.1 供应链负例矩阵）：阶段开始前另行冻结
 
 ## 5. 范围外（本轮不做）
 
-- trust.yaml v2（requireEvidence / runtime / capabilities / allow-deny）（beta.2）
+- 供应链负例矩阵（cache / latest / prepare / native / tampering / dependency re-resolution / cross-platform）（rc.1）
+- OCI Referrers / Evidence 挂载（v0.5.0 收尾）
 - OS-level tracing（strace / eBPF / Windows ETW / macOS Endpoint Security）——beta.1 第一版明确不做（§9.7）
 - Phase B 受控 probe（主动调用 tool / network-filesystem-process effects 实测）——beta.1 后半段
-- OCI Referrers / Evidence 挂载（v0.5.0 收尾）
-- vulnerability scanning / CVE lookup / license policy / capability policy / runtime permissions（明确不做，§7.7/§8.6/§9.7）
+- vulnerability scanning / CVE lookup / license policy（明确不做，§7.7/§8.6/§9.7）
 - SPDX exporter / CycloneDX 2.0（future）
-- 修改 v0.4.2 任何已冻结行为（sign / verify / trust-policy / image 语义不变）
+- 修改 v0.4.2 任何已冻结行为（sign / verify / image 语义不变；trust.yaml v1 规则照常解析，D107）
 
 ## 6. Build Provenance v2（冻结，D68–D71，v0.5.0-alpha.2）
 
@@ -733,10 +734,172 @@ profile、当前真实 credentials（D92 North-Star）。
 ❌ byte-identical 要求（metadata 非确定，normalized result 才 deterministic）
 ```
 
+## 10. trust.yaml v2 / Trust Policy Binding（冻结，D100–D111，v0.5.0-beta.2）
+
+### 10.1 原则（冻结）
+
+> Policy 只能消费**已验证 + 可信签发方 + 绑定当前执行目标**的 Evidence
+> （D67 落地，D109/D111）。评估链（16 步审计链，D106）：
+
+```text
+Artifact Signature          → artifact-signature
+Artifact Signer Trust        → artifact-trust
+Build Provenance presence    → provenance-presence
+Build Provenance signature   → provenance-signature
+Provenance issuer trust      → provenance-issuer      （D109）
+Provenance origin            → provenance-origin
+Source (allowedRepositories) → source
+SBOM presence                → sbom-presence
+SBOM signature               → sbom-signature
+SBOM issuer trust            → sbom-issuer            （D109）
+Attestation presence         → attestation-presence
+Attestation signature        → attestation-signature
+Attestation issuer trust     → attestation-issuer     （D109）
+Attestation coverage         → attestation-coverage
+Execution target binding     → execution-target       （D111）
+Capability Policy            → capability-policy      （denyObserved）
+      ↓
+ALLOW / DENY
+```
+
+Evidence Signature VALID ≠ Evidence Issuer TRUSTED（D109）；attested OS/arch
+必须 exact match 当前 execution target（D111）；候选 Evidence 选择必须
+deterministic，冲突 fail-closed（D110）。
+
+不可混淆：Artifact ≠ Trust Policy；Artifact Identity ≠ Runtime Compatibility；
+Signature VALID ≠ Least Privilege；configHash ≠ Code Identity；Lock ≠ Trust；
+Evidence VALID ≠ Evidence TRUSTED。
+
+### 10.2 Schema（冻结）
+
+```yaml
+version: 2
+
+registries:
+  "ghcr.io/company/prod-*":
+
+    requireSignature: true
+    requireTrusted: true
+    trustedKeys:            # artifact signer（D55）——绝不默认为 evidence 信任（D109）
+      - "SHA256:RELEASE_KEY"
+
+    # D109：Evidence issuer trust。每类可单独 trustedKeys；缺省回退规则级
+    # evidenceTrustedKeys；两者都缺且该项 required → fail-closed DENY。
+    # 不默认 artifact trustedKeys == evidence trustedKeys（角色分离：
+    # Release Key 签 artifact，Builder Key 签 provenance/SBOM，
+    # Attestor Key 签 runtime attestation）。
+    requireEvidence:
+      provenance:
+        required: true
+        origin: build-time
+        trustedKeys:
+          - "SHA256:BUILD_KEY"
+      sbom:
+        required: true
+        trustedKeys:
+          - "SHA256:BUILD_KEY"
+      runtimeAttestation:
+        required: true
+        coverage: complete
+        trustedKeys:
+          - "SHA256:ATTESTOR_KEY"
+
+    # D109 简单版：所有 Evidence 共用（per-type trustedKeys 优先）
+    # evidenceTrustedKeys:
+    #   - "SHA256:BUILD_KEY"
+
+    source:
+      allowedRepositories:
+        - "github.com/company/*"
+
+    runtime:                # D111：当前 execution target 必须在 matrix 内
+      os:
+        - linux
+      arch:
+        - x64
+
+    capabilities:
+      denyObserved:
+        - process.exec
+        - network.unrestricted
+```
+
+- v1 字段（requireSignature / requireTrusted / trustedKeys）照常解析（D107）
+- 新字段全部可选——出现即约束，缺失即不检查该项（requireEvidence 内
+  required 语义见 D101；required 项缺 trustedKeys → fail-closed DENY，D109）
+
+### 10.3 冻结决策（D100–D111）
+
+| # | 决策 |
+|---|------|
+| D100 | **只消费已验证 Evidence**：评估链每一步先验证（envelope 自完整性 + subject==实际 contentHash + attestation 文档 digest 匹配）；未验证的 evidence 视同缺失 |
+| D101 | **缺失即 DENY**：requireEvidence 中任何 required 项缺失/验证失败 → DENY（不"跳过检查放行"）；provenance.origin 要求 build-time 时，post-build endorsement 不满足 → DENY |
+| D102 | **coverage 消费**：runtimeAttestation.coverage 要求与 attestation.observation.coverage 比较（partial < complete；unknown < 任何要求）；要求 complete 而实际 partial/unknown → DENY |
+| D103 | **runtime matrix 是兼容性门槛不是身份**：runtime.os/arch 与当前 execution target 匹配，不匹配 → DENY；不改变 artifact identity（D71 延续） |
+| D104 | **capabilities.denyObserved**：observed 中出现 denyObserved 列表中的能力 → DENY；只消费 observed（不猜 declared）；partial coverage 下"没观察到"不算违规（由 requireCoverage 独立把关） |
+| D105 | **source.allowedRepositories**：provenance.source.repository 必须匹配（glob，最具体优先同 D52）；不匹配 → DENY |
+| D106 | **DENY 必须显式可审计**：评估输出 ALLOW/DENY + 16 步结构化步骤链（每步 ok/reason），拒绝理由可审计；artifact trust 与各 Evidence issuer trust 分开记录 |
+| D107 | **v1 兼容**：version 1 文件照常按 v0.4.2 语义解析执行；v2 是规则对象加法扩展（requireEvidence/source/runtime/capabilities 为可选新字段） |
+| D108 | **CLI 只能收紧**（D54 延续到 v2 字段）：CLI 无法放宽 requireEvidence/coverage/runtime/capabilities |
+| D109 | **Evidence Signature VALID ≠ Evidence Issuer TRUSTED**：每类 required Evidence 必须解析出 trusted issuer（per-type trustedKeys → rule-level evidenceTrustedKeys 回退）；两者皆缺 → fail-closed DENY（不信任任意自签 Evidence）；artifact trustedKeys 绝不默认为 evidence 信任（Release Key ≠ Builder Key ≠ Attestor Key） |
+| D110 | **候选选择 deterministic + ambiguity fail-closed**：同一 contentHash 多份候选时，先按 issuer trust 过滤；0 个 trusted 候选 → DENY；>1 且 statement/document 不等价 → DENY AMBIGUOUS（禁 first/latest wins，结果不依赖目录顺序）；等价候选（同 statementDigest / 同 document digest）视为唯一；未来支持 digest 显式 pin，不发明 mutable 的 latest 选择 |
+| D111 | **Runtime Attestation 绑定当前执行目标**：attested OS/arch 必须 exact match 当前 execution target（process.platform/process.arch），且当前 target 必须在 policy runtime matrix 内（三方匹配：current target == attested env ∈ policy matrix）；Linux/x64 的 attestation 不能证明 Windows/x64 当前环境兼容；第一版 exact match，不猜跨平台兼容性 |
+
+### 10.4 命令面（冻结）
+
+```text
+v2 策略在 image pull/run 门禁中消费（现有 trust.yaml 路径扩展）：
+/pack image run <ref>      ← requireEvidence / coverage / runtime / capabilities 评估
+/pack image pull <ref>     ← 同上（materialize 前 DENY）
+/pack policy <file.dshpack> [--repository <ref>]
+                           ← 本地单件评估（D100–D111），输出：
+                             Policy: ALLOW/DENY
+                             Artifact Trust: VERIFIED (signature VALID)
+                             Evidence Trust: provenance/sbom/runtime-attestation 各自状态
+                             Execution Target: os/arch
+                             16 步审计链
+
+CLI 收紧：--require-signature / --require-trusted 照旧（D108）
+```
+
+### 10.5 验收判据（冻结，T0–T15）
+
+| # | 场景 | 预期 |
+|---|------|------|
+| T0 | 全部要求满足（签名+trusted+provenance+sbom+attestation+coverage+target+无 denyObserved 命中） | ALLOW（16 步全 PASS） |
+| T1 | valid signature + observed 命中 denyObserved | **DENY**（North-Star 1） |
+| T2 | contentHash 相同 + evidence 被篡改（attestation 文档 digest 失配） | attestation-signature FAIL → **DENY**（North-Star 2） |
+| T3 | artifact trusted + attested env ≠ 当前 execution target | **DENY**（North-Star 3，D111） |
+| T4 | requireEvidence.sbom 但无 sbom evidence | DENY |
+| T5 | 要求 coverage: complete 但 attestation 为 partial | DENY（D102） |
+| T6 | requireEvidence.provenance 但无 provenance / origin 非 build-time | DENY |
+| T7 | denyObserved 未命中 + 其余满足 | ALLOW（observed 不在 deny 列表 ≠ 违规） |
+| T8 | version 1 trust.yaml | 照常 v0.4.2 语义（D107） |
+| T9 | CLI 收紧 | 收紧生效、无法放宽（D108） |
+| T10 | Evidence issuer = unknown key（artifact signer 可信） | **DENY UNTRUSTED_EVIDENCE_ISSUER**（North-Star 4，D109） |
+| T11 | artifact signer ≠ evidence signer，两者均被 policy 信任 | ALLOW（不强制 signer 相同，D109） |
+| T12 | 可信 bad attestation（observed process.exec）+ 攻击者 fake clean attestation | 仍 **DENY**（untrusted 候选被过滤，trusted 证据驱动 DENY，D109/D110） |
+| T13 | 两份 trusted attestation 冲突（同 target/coverage/issuer，statement 不等价） | **DENY AMBIGUOUS**（D110，不自动选最新） |
+| T14 | 当前 linux/x64，attestation darwin/arm64，policy 两平台都允许 | 仍 **DENY**（非当前 target 的证据不可用，D111） |
+| T15 | 当前 target == attested env == policy matrix | PASS（D111 三方精确匹配） |
+
+### 10.6 明确不做（scope guard）
+
+```text
+❌ 供应链负例矩阵（rc.1）
+❌ OCI Referrers / Evidence 挂载（v0.5.0 收尾）
+❌ vulnerability / CVE / license policy
+❌ Phase B probe effects 进入策略
+❌ Evidence digest pinning（D110 后续支持，非本期）
+❌ "latest evidence" / 时间戳排序选择（D110 明确禁止 mutable selection）
+❌ 跨平台兼容性推断（compatibleWith / range / portable，D111 第一版 exact match）
+❌ 修改 v0.4.2 sign/verify/image 语义
+```
+
 ---
 
-*本文档 v0.5.0 设计阶段定稿（2026-08-30）。本阶段冻结 D64–D99（+ H1–H3）；
+*本文档 v0.5.0 设计阶段定稿（2026-08-30）。本阶段冻结 D64–D111（+ H1–H3）；
 v0.4.2 的 D41–D63 不受影响。实现顺序：DESIGN 冻结（本文）→ `src/evidence/`
 模块（envelope / service / build-record / sbom / capability / attestation）→
-pack 构建时采集 → CLI 接线 → P0–P12 + S0–S13 + C0–C10 + R0–R14 负例测试 →
-typecheck + vitest 全绿 → CHANGELOG。*
+`src/image/trust-policy-v2.ts` 策略引擎 → 命令面接线 → P0–P12 + S0–S13 +
+C0–C10 + R0–R16 + T0–T15 负例测试 → typecheck + vitest 全绿 → CHANGELOG。*

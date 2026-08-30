@@ -8,15 +8,15 @@
  */
 
 import { execFile } from 'node:child_process'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { PROFILE_ROOT_CONFIG, buildSnapshot } from './config-snapshot.ts'
 import { resolveDependencies, rewriteLockfileForStaging } from './dependency-resolver.ts'
 import { buildPortablePlan } from './portable.ts'
 import { scanAndRedact, redactPatchText } from './secret-scanner.ts'
 import { buildManifest, bundleIdentities, computeConfigHash } from './manifest.ts'
-import { buildTarGz, checksumsJson, type PackFileEntry } from './pack-builder.ts'
+import { buildTarGz, checksumsJson, computePackContentHash, type PackFileEntry } from './pack-builder.ts'
 import { verifyPack } from './verify.ts'
 import { inspectPack } from './inspect.ts'
 import { installPack } from './install.ts'
@@ -24,10 +24,17 @@ import { diffPacks } from './diff.ts'
 import { signPackFile, generateKeypair } from './sign.ts'
 import { buildReceiptPath, captureBuildRecord } from './evidence/build-record.ts'
 import { DefaultEvidenceService } from './evidence/service.ts'
+import { verifyEvidenceEnvelope, verifyEvidenceSubject } from './evidence/envelope.ts'
+import { applyTrustPolicy, type TrustPolicy } from './image/trust.ts'
+import {
+  evaluateTrustPolicyV2, loadTrustPolicyFile, resolveTrustPolicyV2,
+  type AttestationCandidate, type EvidenceCandidate, type PolicyEvaluationResult,
+  type ProvenanceCandidate, type SbomCandidate,
+} from './image/trust-policy-v2.ts'
 import { loadProfileDir, resolveDshHome, resolveInstallAnchor } from './profile-reader.ts'
-import { prettyJson, todayStamp, utcNowIso } from './canonical.ts'
+import { prettyJson, sha256Hex, todayStamp, utcNowIso } from './canonical.ts'
 import type {
-  DependencyTree, InstallOptions, InstallResult, KeygenResult, Manifest, PackDiff, PackInspection,
+  DependencyTree, EvidenceEnvelope, InstallOptions, InstallResult, KeygenResult, Manifest, PackDiff, PackInspection,
   PackOptions, PackResult, SignOptions, SignResult, VerificationReport, Warning,
 } from './types.ts'
 
@@ -53,6 +60,16 @@ export interface PackagerService {
   sign(file: string, opts: SignOptions): Promise<SignResult>
   /** v0.3: generate an ed25519 keypair. */
   keygen(opts: { outDir?: string }): Promise<KeygenResult>
+  /**
+   * v0.5 beta.2: evaluate the LOCAL trust.yaml v1/v2 policy for an artifact
+   * (DESIGN-v0.5.0.md §10, D100–D111). Only VERIFIED inputs are consumed: the
+   * signature goes through the full verify chain, and evidence envelopes must
+   * pass self-integrity + subject==contentHash before evaluation (D100).
+   * Evidence issuer trust is decided per type (D109), candidates are selected
+   * deterministically (D110), and the attestation environment must match the
+   * current execution target (D111).
+   */
+  policy(file: string, opts?: { repository?: string; collectionDir?: string; executionTarget?: { os: string; arch: string } }): Promise<PolicyEvaluationResult>
 }
 
 export interface PackagerContext {
@@ -311,6 +328,155 @@ export class DefaultPackager implements PackagerService {
     })
     rmSync(root, { recursive: true, force: true })
     return report
+  }
+
+  /**
+   * v0.5 beta.2 — trust.yaml v2 evaluation for one artifact (D100–D111):
+   * verified signature → evidence candidates (D100) → resolve the LOCAL policy
+   * (v1/v2, D107) → evaluate → ALLOW / DENY with the auditable chain.
+   */
+  async policy(
+    file: string,
+    opts: { repository?: string; collectionDir?: string; executionTarget?: { os: string; arch: string } } = {},
+  ): Promise<PolicyEvaluationResult> {
+    const bytes = readFileSync(file)
+    const contentHash = await computePackContentHash(bytes)
+
+    // 1. verified signature (v0.3/v0.4 chain — VALID ≠ TRUSTED, D19/D29)
+    const report = await this.verify(file)
+    const signatureSection = report.sections.find((s) => s.name === 'Signature')
+
+    // 2. evidence candidates (D100): EVERY envelope of each type, verified or
+    //    not, in deterministic file order — presence/signature/issuer are
+    //    reported separately (D106) and selection is deterministic (D110).
+    const collectionRoot = opts.collectionDir
+      ?? join(dirname(file), `${basename(file, '.dshpack')}.dshpack.evidence`)
+    const provenance = this.provenanceCandidates(collectionRoot, contentHash)
+    const sbom = this.sbomCandidates(collectionRoot, contentHash)
+    const attestation = this.attestationCandidates(collectionRoot, contentHash)
+
+    // 3. resolve the local policy for the repository (provenance source by default)
+    const repository = opts.repository ?? provenance.find((c) => c.verified)?.repository ?? ''
+    const decision = resolveTrustPolicyV2(loadTrustPolicyFile(this.home()), repository)
+
+    // 4. signature input from the v1 trust fields (trustedKeys, D55)
+    const trustVerdict = applyTrustPolicy(signatureSection, {
+      ...(decision.requireSignature ? { requireSignature: true } : {}),
+      ...(decision.requireTrusted ? { requireTrusted: true } : {}),
+      ...(decision.trustedKeys !== undefined ? { trustedKeys: decision.trustedKeys } : {}),
+    })
+
+    // 5. evaluate — verified inputs only (D100), bound to the current target (D111)
+    const executionTarget = opts.executionTarget ?? { os: process.platform, arch: process.arch }
+    const verdict = evaluateTrustPolicyV2(decision, {
+      signature: { status: trustVerdict.signature, trust: trustVerdict.trust },
+      executionTarget,
+      provenance,
+      sbom,
+      attestation,
+    })
+    return { contentHash, repository, decision, verdict, executionTarget }
+  }
+
+  /** D100: scan one evidence type directory — every `.json` envelope in deterministic file order. */
+  private scanEnvelopes(collectionRoot: string, type: string): EvidenceEnvelope[] {
+    const dir = join(collectionRoot, type)
+    if (!existsSync(dir)) return []
+    const envelopes: EvidenceEnvelope[] = []
+    for (const name of readdirSync(dir).sort()) {
+      if (!name.endsWith('.json')) continue
+      try {
+        const envelope = JSON.parse(readFileSync(join(dir, name), 'utf8')) as EvidenceEnvelope
+        if (envelope.type !== type) continue
+        envelopes.push(envelope)
+      } catch { /* unreadable — skip, never a candidate */ }
+    }
+    return envelopes
+  }
+
+  /** D100: verify an envelope's self-integrity + subject binding against the artifact. */
+  private verifiedBase(
+    envelope: EvidenceEnvelope, contentHash: string,
+  ): { verified: boolean; keyId: string; statementDigest: string } {
+    const envVerdict = verifyEvidenceEnvelope(envelope)
+    if (!envVerdict.ok) return { verified: false, keyId: '', statementDigest: envelope.statementDigest }
+    const subjectOk = verifyEvidenceSubject(envelope, contentHash).ok
+    return { verified: subjectOk, keyId: envVerdict.keyId, statementDigest: envelope.statementDigest }
+  }
+
+  /** D109/D110: build-provenance candidates — origin + repository read from the verified statement. */
+  private provenanceCandidates(collectionRoot: string, contentHash: string): ProvenanceCandidate[] {
+    return this.scanEnvelopes(collectionRoot, 'build-provenance').map((envelope) => {
+      const base = this.verifiedBase(envelope, contentHash)
+      const statement = envelope.statement as { capture?: { mode?: unknown }; source?: { repository?: unknown } } | undefined
+      return {
+        ...base,
+        ...(typeof statement?.capture?.mode === 'string' ? { origin: statement.capture.mode } : {}),
+        ...(typeof statement?.source?.repository === 'string' ? { repository: statement.source.repository } : {}),
+      }
+    })
+  }
+
+  /** D109/D110: sbom candidates — documentKey is the semantic document anchor. */
+  private sbomCandidates(collectionRoot: string, contentHash: string): SbomCandidate[] {
+    return this.scanEnvelopes(collectionRoot, 'sbom').map((envelope) => {
+      const base = this.verifiedBase(envelope, contentHash)
+      const statement = envelope.statement as { sbomDigest?: { value?: unknown } } | undefined
+      const digestValue = statement?.sbomDigest?.value
+      return {
+        ...base,
+        ...(typeof digestValue === 'string' && digestValue !== '' ? { documentKey: digestValue } : {}),
+      }
+    })
+  }
+
+  /**
+   * D109/D110/D111: attestation candidates — the document is digest-matched
+   * against the envelope statement BEFORE its contents are trusted (D100/D99);
+   * a missing/mismatched document makes the candidate UNVERIFIED (the evidence
+   * is not self-consistent). The environment is read from the verified
+   * document for the D111 target binding.
+   */
+  private attestationCandidates(collectionRoot: string, contentHash: string): AttestationCandidate[] {
+    return this.scanEnvelopes(collectionRoot, 'attestation').map((envelope) => {
+      const base = this.verifiedBase(envelope, contentHash)
+      const statement = envelope.statement as { attestationDigest?: { value?: unknown } } | undefined
+      const digestValue = statement?.attestationDigest?.value
+      if (!base.verified || typeof digestValue !== 'string' || digestValue === '') {
+        return { ...base, verified: false, observed: [] }
+      }
+      const documentFile = join(collectionRoot, 'documents', `${digestValue}.attestation.json`)
+      if (!existsSync(documentFile)) return { ...base, verified: false, observed: [] }
+      const documentText = readFileSync(documentFile, 'utf8')
+      if (sha256Hex(documentText) !== digestValue) return { ...base, verified: false, observed: [] }
+      let doc: {
+        observation?: { coverage?: unknown }
+        environment?: { os?: unknown; arch?: unknown }
+        observed?: { tools?: unknown; skills?: unknown; services?: unknown; providers?: unknown }
+      }
+      try {
+        doc = JSON.parse(documentText)
+      } catch {
+        return { ...base, verified: false, observed: [] }
+      }
+      const coverage = doc.observation?.coverage
+      const envOs = typeof doc.environment?.os === 'string' ? doc.environment.os : undefined
+      const envArch = typeof doc.environment?.arch === 'string' ? doc.environment.arch : undefined
+      const stringIds = (value: unknown): string[] => Array.isArray(value)
+        ? value.filter((x): x is string => typeof x === 'string')
+        : []
+      const observed = [
+        ...stringIds(doc.observed?.tools), ...stringIds(doc.observed?.skills),
+        ...stringIds(doc.observed?.services), ...stringIds(doc.observed?.providers),
+      ]
+      return {
+        ...base,
+        documentKey: digestValue,
+        ...(coverage === 'complete' || coverage === 'partial' || coverage === 'unknown' ? { coverage } : {}),
+        ...(envOs !== undefined && envArch !== undefined ? { environment: { os: envOs, arch: envArch } } : {}),
+        observed,
+      }
+    })
   }
 
   async install(file: string, opts: InstallOptions): Promise<InstallResult> {

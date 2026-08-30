@@ -16,7 +16,7 @@ import type { PackDiff, PackOptions } from './types.ts'
 
 /** A parsed /pack invocation. */
 export interface ParsedInvocation {
-  sub: 'pack' | 'inspect' | 'verify' | 'install' | 'diff' | 'sign' | 'keygen' | 'evidence' | 'image' | 'run' | 'push' | 'pull'
+  sub: 'pack' | 'inspect' | 'verify' | 'install' | 'diff' | 'sign' | 'keygen' | 'policy' | 'evidence' | 'image' | 'run' | 'push' | 'pull'
   positionals: string[]
   flags: Record<string, string | boolean>
 }
@@ -27,7 +27,7 @@ export function parseCommand(rawInput: string): ParsedInvocation {
   let sub: ParsedInvocation['sub'] = 'pack'
   if (tokens[0] === 'inspect' || tokens[0] === 'verify' || tokens[0] === 'install'
     || tokens[0] === 'diff' || tokens[0] === 'sign' || tokens[0] === 'keygen'
-    || tokens[0] === 'evidence' || tokens[0] === 'image' || tokens[0] === 'run'
+    || tokens[0] === 'policy' || tokens[0] === 'evidence' || tokens[0] === 'image' || tokens[0] === 'run'
     || tokens[0] === 'push' || tokens[0] === 'pull') {
     sub = tokens[0]
     tokens.shift()
@@ -219,6 +219,35 @@ export async function runCommand(
           requireSignature: invocation.flags['require-signature'] === true,
         })
         return { kind: report.ok ? 'success' : 'error', text: renderVerifyReport(report, invocation.flags['json'] === true) }
+      }
+      case 'policy': {
+        const file = invocation.positionals[0]
+        if (file === undefined) {
+          return { kind: 'error', text: '✗ usage: /pack policy <file.dshpack> [--repository <ref>]' }
+        }
+        const repository = typeof invocation.flags['repository'] === 'string' ? invocation.flags['repository'] : undefined
+        const result = await packager.policy(file, {
+          ...(repository !== undefined ? { repository } : {}),
+        })
+        const decision = result.verdict.decision
+        const trust = (status: string, reason?: string): string =>
+          `${status}${reason !== undefined ? ` (${reason})` : ''}`
+        const lines = [
+          `${decision === 'ALLOW' ? '✓' : '✗'} Policy: ${decision}`,
+          `  Artifact Trust: ${trust(result.verdict.artifactTrust, `signature ${result.verdict.signature}`)}`,
+          `  Evidence Trust:`,
+          `    provenance: ${result.verdict.evidenceTrust.provenance}`,
+          `    sbom: ${result.verdict.evidenceTrust.sbom}`,
+          `    runtime-attestation: ${result.verdict.evidenceTrust.attestation}`,
+          `  Execution Target: ${result.executionTarget.os}/${result.executionTarget.arch}`,
+          `  Repository: ${result.repository === '' ? '(none — provenance source absent)' : result.repository}`,
+          ...(result.decision.matchedRule !== undefined ? [`  Matched rule: ${result.decision.matchedRule}`] : []),
+          `  Subject (contentHash): ${result.contentHash}`,
+          '  Steps:',
+          ...result.verdict.steps.map((step) => `    ${step.ok ? 'PASS' : 'FAIL'} ${step.step}${step.reason !== undefined ? ` — ${step.reason}` : ''}`),
+          ...(result.verdict.errors.length > 0 ? ['  Errors:', ...result.verdict.errors.map((e) => `    - ${e}`)] : []),
+        ]
+        return { kind: decision === 'ALLOW' ? 'success' : 'error', text: lines.join('\n') }
       }
       case 'install': {
         const file = invocation.positionals[0]

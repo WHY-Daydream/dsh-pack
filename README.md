@@ -69,7 +69,7 @@ Governed Runtime
 
 ## Demo
 
-可复现的终端演示（pack → sign → import → lock → verify → run 全链路）：
+Reproducible terminal recording of the full chain (pack → sign → import → lock → verify → run):
 
 ```text
 contentHash: sha256:...
@@ -83,9 +83,8 @@ demo/agent:prod
 Agent image started
 ```
 
-- 录制脚本：`demo/recording/demo.sh`（`DEMO_MODE=local` 默认；`DEMO_MODE=ghcr` 展示真实 push/lock）
-- 确定性录制：`demo/recording/demo.tape`（VHS）
-- 演示 GIF：`docs/assets/dsh-pack-demo.gif`
+- Recording script: `demo/recording/demo.sh` (`DEMO_MODE=local` by default; `DEMO_MODE=ghcr` shows real push/lock)
+- Deterministic recording: `demo/recording/demo.tape` (VHS)
 
 ---
 

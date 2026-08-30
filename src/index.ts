@@ -48,7 +48,7 @@ export const apply = (ctx: Context): (() => void) => {
   disposers.push(ctx.commands.register({
     name: 'pack',
     description: 'Pack, inspect, verify, install, sign or run DSH artifacts (.dshpack / images / evidence)',
-    input: { hint: '[profile] | inspect <file> | verify <file> | install <file> | sign <file> | keygen | evidence <sign|verify|provenance> | image <import|ls|inspect|tag|rm> | run <ref>' },
+    input: { hint: '[profile] | inspect <file> | verify <file> | install <file> | sign <file> | keygen | evidence <sign|verify|provenance|sbom> | image <import|ls|inspect|tag|rm> | run <ref>' },
     handler,
   }))
 

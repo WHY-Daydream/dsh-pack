@@ -364,3 +364,27 @@ export interface ProvenanceSignResult extends EvidenceSignResult {
    */
   captureMode: 'post-build-receipt'
 }
+
+/** Options for `/pack evidence sbom` (v0.5 alpha.3, D73–D80). */
+export interface SbomSignOptions {
+  /** Path to the private key PEM (pkcs8). */
+  key: string
+  /** Optional human-readable signer label (display only). */
+  signer?: string
+  /** Output directory (default: alongside the input pack). */
+  outDir?: string
+}
+
+/**
+ * Result of `/pack evidence sbom`: the CycloneDX 1.7 document
+ * (`documents/<sbomDigest>.cdx.json`) plus its Signed Evidence envelope
+ * (`sbom/<statementDigest>.json`) bound to the artifact contentHash (D75).
+ */
+export interface SbomSignResult extends EvidenceSignResult {
+  /** The standalone CycloneDX document path (D73/D75). */
+  documentFile: string
+  /** Deterministic digest over the document bytes (D80). */
+  sbomDigest: string
+  /** Number of CycloneDX components (display + tests). */
+  componentCount: number
+}

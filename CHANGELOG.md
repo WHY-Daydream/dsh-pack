@@ -5,6 +5,24 @@
 
 ## [Unreleased]
 
+- **v0.5.0-beta.1（Runtime Attestation，D89–D97 冻结，DESIGN-v0.5.0.md §9）**：
+  冷启 seam 调研结论：harness `boot()`（dsh-app-boot）→ cordis Context，cold
+  boot 后从服务注册表 seam 收集 observed capabilities（不引入 OS-level
+  tracing）。subject 绑定实际 contentHash（D89）；Observed 与 Declared 分离并
+  输出结构化 diff，observedButNotDeclared 只报告不 DENY（D90/D91）；所有执行
+  在 disposable isolated DSH_HOME/profile 中，env allowlist 只给
+  PATH/临时 HOME/TMPDIR/必要 DSH vars，secrets 默认不可见（D92/D93）；cold
+  boot 与主动 tool invocation 分开，Phase A 只启动-注册-初始化-shutdown
+  （D94）；effects 来自 observation，未测 = NOT_PROBED 而非 false（D95）；
+  不要求 byte-identical，normalized result → deterministic resultDigest
+  （D96）；cleanup 本身是 Evidence（D97）；Observed 必须来自运行时注册表
+  观察——真实 cold boot → 正常注册 → 只读观察，禁 monkey-patch
+  register()/provide() 改变插件语义、禁 grep 源码猜 observed（D98）；
+  Observation Coverage 显式声明 complete|partial|unknown，root observer
+  无法完整观察 child-context 服务时如实 partial、cold boot 失败 unknown，
+  partial 不得被解释为权威缺失（comparison.authoritative=false，D99）。
+  R0–R16 测试矩阵。明确不做：
+  OS-level tracing、allow/deny、Phase B probe（后半段）、按名称推断 effects。
 - **v0.5.0-alpha.4（Declared Capability Manifest，D81–D88 冻结，DESIGN-v0.5.0.md §8）**：
   纯 artifact inspection、无 cold boot（绝不为生成 declared manifest 执行插件
   代码）。调研结论：harness profile schema（app-boot）只有 bundles 字段，

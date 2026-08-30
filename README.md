@@ -85,15 +85,58 @@ v0.4.2 Governed      — image lock + trust.yaml + local prune + Real GHCR 8/8 P
 
 ---
 
-## Architecture & Identity Model
+## Architecture — Artifact Supply Chain
 
-### Four-Layer Digest System
+```mermaid
+flowchart LR
+    P["DSH Profile"] --> PACK["/pack"]
+
+    PACK --> A[".dshpack Artifact"]
+
+    A --> CH["configHash<br/>Reproducibility"]
+    A --> DH["contentHash<br/>DSH Identity"]
+
+    A --> SIGN["Ed25519 Sign"]
+    SIGN --> SA["Signed Artifact"]
+
+    SA --> IMG["Image Import"]
+    IMG --> LS["Local Image Store<br/>Content Addressed"]
+
+    LS --> PUSH["OCI Push"]
+    PUSH --> REG["OCI Registry / GHCR"]
+
+    REG --> LOCK["dsh-lock.json<br/>Version Governance"]
+    REG --> PULL["OCI Pull"]
+
+    PULL --> VERIFY["OCI Integrity<br/>↓<br/>DSH Integrity<br/>↓<br/>Signature<br/>↓<br/>Trust"]
+
+    LOCK --> VERIFY
+    TP["trust.yaml<br/>Execution Governance"] --> VERIFY
+
+    VERIFY --> RUN["Runnable Agent Image"]
+    RUN --> RT["Temporary Runtime"]
+
+    LS --> GC["Mark-and-Sweep Prune<br/>Local Lifecycle"]
+```
+
+### Identity Model — Four Layers
 
 ```text
-configHash      → Reproducible profile semantics (the "what")
-contentHash     → DSH artifact identity + signing anchor (the "who")
-OCI blobDigest  → Raw transport bytes (SHA256 over .dshpack archive)
-OCI manifestDigest → Immutable remote image identity (OCI content-addressing)
+configHash
+    ↓
+Profile reproducibility
+
+contentHash
+    ↓
+DSH artifact identity / signing
+
+OCI blobDigest
+    ↓
+Transport bytes integrity
+
+OCI manifestDigest
+    ↓
+Remote immutable image identity
 ```
 
 ### Core Invariants

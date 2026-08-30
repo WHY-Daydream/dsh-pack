@@ -1,17 +1,11 @@
 {
   "name": "@why-daydream/dsh-pack",
-  "description": "Portable, reproducible and safe DSH profiles: pack a runnable DSH Profile into a verifiable .dshpack (pack / inspect / verify / install)",
-  "version": "0.1.0",
-  "publishConfig": {
-    "access": "public"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/WHY-Daydream/dsh-pack.git"
-  },
-  "type": "module",
-  "main": "lib/index.js",
-  "types": "lib/index.d.ts",
+  "version": "0.4.2",
+  "description": "Portable, reproducible and verifiable runtime artifacts for DeepSeek Harness",
+  "license": "MIT",
+
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
@@ -20,17 +14,43 @@
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
+  "type": "module",
+
   "files": [
-    "lib/index.js",
+    "lib",
     "cordis.patch.yml",
-    "lib/**/*.d.ts"
+    "README.md",
+    "LICENSE"
   ],
-  "license": "MIT",
+
+  "publishConfig": {
+    "access": "public"
+  },
+
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WHY-Daydream/dsh-pack.git"
+  },
+  "bugs": {
+    "url": "https://github.com/WHY-Daydream/dsh-pack/issues"
+  },
+  "homepage": "https://github.com/WHY-Daydream/dsh-pack#readme",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "agent",
+    "agent-runtime",
+    "oci",
+    "supply-chain"
+  ],
+
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
   },
+
   "scripts": {
     "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc -b tsconfig.build.json --pretty false",
@@ -38,6 +58,7 @@
     "test:watch": "vitest",
     "lint": "oxlint ."
   },
+
   "dependencies": {
     "tar": "^7.4.3",
     "yaml": "^2.8.0"

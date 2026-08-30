@@ -131,6 +131,13 @@ image lock / trust.yaml / prune（跑通真实 GHCR 后再做，顺序见 DESIGN
     push，⑥⑦⑧ 及其余项 NOT RUN。修复：`scripts/ghcr-fixture.mjs`
     canonical lowercase（`why-daydream/dsh-pack-e2e`），target/URL/scope
     共用同一字符串；Parser 不放宽（回归测试钉死）。
+  - run #4 **8/8 PASS ✅**（run 33292227705，head 5139074）：真实 GHCR
+    协议 8 项全部通过——① Bearer challenge ② token（pull,push）③ blob
+    HEAD 404→200 ④ POST uploads/ → PUT ?digest → 201 ⑤ OCI manifest PUT
+    Content-Type ⑥ tag pull Content-Type + Docker-Content-Digest == bytes
+    ⑦ digest pull 与 tag 一致 ⑧ DSH contentHash + Signature VALID + Trust
+    VERIFIED + run configHash 一致。
+  - **Release Gate PASS → v0.4.2 允许 merge/tag**（原 §10 硬 Gate 解锁）。
 
 ## [v0.4.1] - 2026-08-29
 

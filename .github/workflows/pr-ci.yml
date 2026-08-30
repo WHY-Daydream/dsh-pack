@@ -1,6 +1,7 @@
 # 普通 PR CI（DESIGN-v0.4.2.md §4A）：不碰真实 GHCR。
 # 覆盖：typecheck / 本地测试套件（含 mock OCI registry）/ signing CLI E2E。
 # 真实 GHCR 协议验收单独走 ghcr-e2e.yml（workflow_dispatch，D41/D43）。
+# 2026-08-30：注册触发 re-touch（blob 变更强制 GitHub 重新扫描 workflow 注册）。
 name: PR CI
 
 on:

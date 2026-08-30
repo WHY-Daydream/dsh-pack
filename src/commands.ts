@@ -421,8 +421,36 @@ export async function runCommand(
             ]
             return { kind: 'success', text: lines.join('\n') }
           }
+          case 'attestation': {
+            const file = args[0]
+            const key = typeof invocation.flags['key'] === 'string' ? invocation.flags['key'] : undefined
+            if (file === undefined || key === undefined) {
+              return {
+                kind: 'error',
+                text: '✗ usage: /pack evidence attestation <file.dshpack> --key <private.pem> [--signer <name>] [--out <dir>]',
+              }
+            }
+            const signer = typeof invocation.flags['signer'] === 'string' ? invocation.flags['signer'] : undefined
+            const outDir = typeof invocation.flags['out'] === 'string' ? invocation.flags['out'] : undefined
+            const result = await evidence.attestation(file, {
+              key,
+              ...(signer !== undefined ? { signer } : {}),
+              ...(outDir !== undefined ? { outDir } : {}),
+            })
+            const lines = [
+              `✓ Runtime Attestation Evidence signed: ${result.file}`,
+              `  Cold boot: ${result.coldBootStatus} | Cleanup: ${result.cleanupStatus} | Observed: ${result.observedCount} capabilities`,
+              `  Result digest (normalized): ${result.resultDigest}`,
+              `  Document digest: ${result.attestationDigest}`,
+              `  Document: ${result.documentFile}`,
+              `  Subject (contentHash): ${result.contentHash}`,
+              `  signer fingerprint: SHA256:${result.keyId}`,
+              ...(result.signer !== undefined ? [`  signer: ${result.signer} (display label only — trust identity is the fingerprint)`] : []),
+            ]
+            return { kind: 'success', text: lines.join('\n') }
+          }
           default:
-            return { kind: 'error', text: `✗ unknown evidence subcommand ${JSON.stringify(evidenceSub)} (sign | verify | provenance | sbom | capability)` }
+            return { kind: 'error', text: `✗ unknown evidence subcommand ${JSON.stringify(evidenceSub)} (sign | verify | provenance | sbom | capability | attestation)` }
         }
       }
       case 'image': {

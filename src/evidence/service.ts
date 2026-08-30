@@ -37,7 +37,11 @@ import {
   CAPABILITY_EVIDENCE_TYPE, CAPABILITY_FORMAT, CAPABILITY_SCHEMA_VERSION,
   generateCapabilityManifestFromPack,
 } from './capability.ts'
+import {
+  ATTESTATION_EVIDENCE_TYPE, ATTESTATION_FORMAT, ATTESTATION_SCHEMA_VERSION, runAttestation,
+} from './attestation.ts'
 import type {
+  AttestationSignOptions, AttestationSignResult,
   CapabilitySignOptions, CapabilitySignResult,
   EvidenceEnvelope, EvidenceSignOptions, EvidenceSignResult, EvidenceVerifyResult,
   ProvenanceSignOptions, ProvenanceSignResult, SbomSignOptions, SbomSignResult,
@@ -72,6 +76,13 @@ export interface EvidenceService {
    * `capability` Evidence bound to the actual contentHash (D82).
    */
   capability(file: string, opts: CapabilitySignOptions): Promise<CapabilitySignResult>
+  /**
+   * Run a Phase-A Runtime Attestation (D89–D97): disposable isolated cold boot
+   * + observed capabilities + declared-vs-observed diff + cleanup evidence,
+   * write the standalone document, and sign the `attestation` Evidence bound
+   * to the actual contentHash (D89).
+   */
+  attestation(file: string, opts: AttestationSignOptions): Promise<AttestationSignResult>
 }
 
 /** Default evidence service: pack contentHash is the immutable subject (D64). */
@@ -321,6 +332,63 @@ export class DefaultEvidenceService implements EvidenceService {
       documentFile,
       capabilityDigest: digest,
       capabilityCount: manifest.declared.providers.length + manifest.declared.services.length,
+    }
+  }
+
+  /**
+   * Run a Phase-A Runtime Attestation (D89–D97): cold boot the artifact's
+   * profile inside a disposable isolated DSH_HOME (env allowlist), observe
+   * registered capabilities through the runtime registry seam, diff against
+   * the declared manifest, record cleanup as evidence, write the standalone
+   * document to `documents/<attestationDigest>.attestation.json`, then sign
+   * the `attestation` Evidence: subject = actual contentHash (D89), statement
+   * carries format/schemaVersion + attestationDigest.
+   */
+  async attestation(file: string, opts: AttestationSignOptions): Promise<AttestationSignResult> {
+    if (!existsSync(file)) throw new PackError(`pack file not found: ${file}`, 1)
+    const contentHash = await computePackContentHash(readFileSync(file))
+    const run = await runAttestation(readFileSync(file), contentHash, {
+      ...(opts.extraModules !== undefined ? { extraModules: opts.extraModules } : {}),
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    })
+    const digestHex = run.digest.slice('sha256:'.length)
+
+    // standalone attestation document
+    const outDir = opts.outDir ?? dirname(file)
+    const collectionRoot = join(outDir, `${basename(file, '.dshpack')}.dshpack.evidence`)
+    const documentFile = join(collectionRoot, 'documents', `${digestHex}.attestation.json`)
+    mkdirSync(dirname(documentFile), { recursive: true })
+    if (existsSync(documentFile)) {
+      const existing = readFileSync(documentFile, 'utf8')
+      if (existing !== run.document) {
+        throw new PackError(`attestation document already exists (refusing to overwrite): ${documentFile}`, 1)
+      }
+    } else {
+      writeFileSync(documentFile, run.document)
+    }
+
+    // signed Evidence envelope bound to the artifact (D89)
+    const result = await this.sign(file, {
+      type: ATTESTATION_EVIDENCE_TYPE,
+      statement: {
+        format: ATTESTATION_FORMAT,
+        schemaVersion: ATTESTATION_SCHEMA_VERSION,
+        attestationDigest: { algorithm: 'sha256', value: digestHex },
+      },
+      key: opts.key,
+      ...(opts.signer !== undefined ? { signer: opts.signer } : {}),
+      ...(opts.outDir !== undefined ? { outDir: opts.outDir } : {}),
+    })
+    const observedCount = run.observed.providers.length + run.observed.services.length
+      + run.observed.tools.length + run.observed.skills.length
+    return {
+      ...result,
+      documentFile,
+      attestationDigest: run.digest,
+      resultDigest: run.resultDigest,
+      coldBootStatus: run.coldBootStatus,
+      cleanupStatus: run.cleanupStatus,
+      observedCount,
     }
   }
 }

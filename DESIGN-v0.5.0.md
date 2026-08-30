@@ -245,8 +245,8 @@ Evidence 被篡改
 | v0.5.0-alpha.2（本阶段） | **Build Provenance v2**（D68–D72 冻结，§6）：构建时采集 / Git source identity / materials digests / dependency closure / environment matrix + **D72 origin 语义**（build-time attestation vs post-build endorsement） |
 | v0.5.0-alpha.3（本阶段） | **SBOM Evidence**（D73–D80 冻结，§7）：CycloneDX 1.7 JSON canonical；只消费 artifact closure（禁扫当前机器）；独立文档 + signed envelope；deterministic；UNKNOWN 语义 |
 | v0.5.0-alpha.4（本阶段） | **Declared Capability Manifest**（D81–D88 冻结，§8）：纯 artifact inspection，只声明"能做什么"；Observed 归 beta.1 |
-| v0.5.0-beta.1 | Isolated Runtime Attestation（cold boot / effects / cleanup / rollback）+ **Observed Capability**（declared vs observed 对比） |
-| v0.5.0-beta.2 | trust.yaml v2（requireEvidence / runtime matrix / capability policy） |
+| v0.5.0-beta.1（本阶段） | **Runtime Attestation**（D89–D97 冻结，§9）：disposable isolated cold boot + observed capabilities + declared-vs-observed diff + cleanup 证据；effects 第一版 NOT_PROBED，Phase B 受控 probe 后半段 |
+| v0.5.0-beta.2 | trust.yaml v2（requireEvidence / runtime matrix / capability policy，消费 declared/observed diff 后 DENY） |
 | v0.5.0-rc.1 | 供应链负例矩阵（cache / latest / prepare / native / tampering / dependency re-resolution / cross-platform） |
 | v0.5.0 | OCI Evidence Distribution（provenance/sbom/attestation 作为 subject 指向 artifact 的独立对象） |
 
@@ -256,14 +256,16 @@ Evidence 被篡改
 - D68–D72：Build Provenance v2 + D72 origin 语义（§6，已冻结，v0.5.0-alpha.2）
 - D73–D80：SBOM Evidence（§7，已冻结，v0.5.0-alpha.3）
 - D81–D88：Declared Capability Manifest（§8，已冻结，v0.5.0-alpha.4）
-- 后续阶段决策（Runtime Attestation / trust.yaml v2）：阶段开始前另行冻结
+- D89–D99：Runtime Attestation（§9，已冻结，v0.5.0-beta.1）
+- 后续阶段决策（trust.yaml v2）：阶段开始前另行冻结
 
 ## 5. 范围外（本轮不做）
 
-- Observed Capability / network-filesystem-process effects（beta.1 Runtime Attestation）
 - trust.yaml v2（requireEvidence / runtime / capabilities / allow-deny）（beta.2）
+- OS-level tracing（strace / eBPF / Windows ETW / macOS Endpoint Security）——beta.1 第一版明确不做（§9.7）
+- Phase B 受控 probe（主动调用 tool / network-filesystem-process effects 实测）——beta.1 后半段
 - OCI Referrers / Evidence 挂载（v0.5.0 收尾）
-- vulnerability scanning / CVE lookup / license policy / capability policy / runtime permissions（明确不做，§7.7/§8.6）
+- vulnerability scanning / CVE lookup / license policy / capability policy / runtime permissions（明确不做，§7.7/§8.6/§9.7）
 - SPDX exporter / CycloneDX 2.0（future）
 - 修改 v0.4.2 任何已冻结行为（sign / verify / trust-policy / image 语义不变）
 
@@ -594,10 +596,147 @@ SBOM 只回答：**"这个 artifact 里面/依赖了什么？"**
 ❌ 从能力名称推断权限（tool 名叫 fetch ≠ network=true）
 ```
 
+## 9. Runtime Attestation（冻结，D89–D97，v0.5.0-beta.1）
+
+### 9.1 冷启 seam 与观察方式（调研结论，冻结）
+
+```text
+Declared Capability     → artifact 声称/静态可见什么（alpha.4）
+Observed Capability     → 启动后实际注册了什么（beta.1）
+Runtime Effects         → 测试执行时实际产生什么效果（beta.1 后半段）
+```
+
+对 deepseek-harness runtime（`apps/cli` profile-boot）的调研结论：
+
+- **冷启 seam**：harness `boot()`（`@deepseek-ai/dsh-app-boot`）→ cordis
+  `Context`；`FiberState.ACTIVE` 后即可枚举注册表
+- **观察方式**：子进程 + disposable DSH_HOME + env allowlist（D92/D93），冷启
+  后从 cordis 服务注册表（`ctx.get(name)` 等 seam）与已挂载 composition 行
+  （id/provider）收集 observed capabilities，dump 后 dispose（D94 Phase A）
+- observed 分类：services/providers 来自已挂载行与注册表可见服务；tools/skills
+  从 runtime 注册表 seam 收集（R-tests 用 fixture bundle 钉死分类）——
+  **不引入 OS-level tracing**（strace/eBPF/ETW/Endpoint Security 第一版不做）
+- **采集原则（D98）**：Observer 只读取 cold boot 后的注册状态——真实 DSH
+  cold boot → runtime 正常注册 → observer 只读 registration state；**不
+  monkey-patch register()/provide()**（改变插件执行语义就不是 observation），
+  **不 grep 源码/静态分析猜 observed**
+
+### 9.2 执行环境（冻结，D92/D93）
+
+```text
+/tmp/dsh-pack-attest-<uuid>/
+├── home/          ← disposable DSH_HOME
+├── profile/       ← 从 artifact 物化的 profile（manifest + patch + node_modules）
+├── workspace/     ← 空工作目录
+└── effects/       ← observer dump 输出（observed JSON 等）
+```
+
+**Env Allowlist（第一版）**：`PATH`、`HOME`（临时）、`TMPDIR`（临时）、
+`DSH_HOME`（临时）、`DSH_TELEMETRY_DISABLED`、必要的 DSH runtime vars。
+**默认全部不可见**：`GITHUB_TOKEN` / `NPM_TOKEN` / `AWS_*` / `SSH_AUTH_SOCK` /
+`OPENAI_API_KEY` / DSH registry credentials / 其余 `process.env`。
+
+**绝对禁止**作为 attestation 环境：当前用户正式 `~/.dsh`、当前 production
+profile、当前真实 credentials（D92 North-Star）。
+
+### 9.3 Schema（冻结）
+
+```json
+{
+  "schemaVersion": 1,
+  "subject": { "contentHash": "sha256:..." },
+  "environment": { "dsh": "...", "node": "...", "os": "linux", "arch": "x64" },
+  "observation": {
+    "coverage": "partial",
+    "reasons": [
+      "child-context services may not be visible from the root observer"
+    ]
+  },
+  "coldBoot": { "status": "PASS" },
+  "observed": { "tools": [], "skills": [], "services": [], "providers": [] },
+  "comparison": {
+    "declaredButNotObserved": [],
+    "observedButNotDeclared": [],
+    "authoritative": false
+  },
+  "effects": { "network": "NOT_PROBED", "filesystem": "NOT_PROBED", "process": "NOT_PROBED" },
+  "cleanup": { "status": "PASS" }
+}
+```
+
+- **NOT_PROBED ≠ false**：`false` 会被误读成"已证明不会访问"，实际只是"没测"（D95）
+- **observation.coverage（D99）**：`complete | partial | unknown` 三态，不做百分比
+  （无法证明 80%）；root observer 无法完整观察 child-context services/providers
+  时如实为 `partial`（reasons 说明局限），cold boot 失败为 `unknown`；
+  **partial 不得被解释为 authoritative absence**——diff 数据照常输出，但
+  `comparison.authoritative=false`，beta.2 用 `requireCoverage: complete` 决定 DENY
+- **declared-vs-observed diff**：`observedButNotDeclared` 是最重要的安全信号
+  （例如 observed 出现 `process.exec` 而 declared 没有），但 **只报告不 DENY**
+  —— DENY 留给 beta.2 trust.yaml v2（D90/D91）
+- **D96**：metadata（observedAt / runId / 临时路径）非确定性，normalized
+  result（observation/capabilities/effects/coldBoot/cleanup）确定性 →
+  `resultDigest = sha256(canonical(normalized result))`，观察结果一致时可相同
+
+### 9.4 冻结决策（D89–D97）
+
+| # | 决策 |
+|---|------|
+| D89 | Runtime Attestation 必须**绑定 immutable artifact identity**：subject=实际 contentHash；不绑 tag / profile name / configHash |
+| D90 | **Observed 永远不能覆盖 Declared**：attestation 引用 `declaredCapabilityDigest` + 输出结构化 diff；`observedButNotDeclared` 只报告不 DENY |
+| D91 | Attestation 是 **Observation 不是 Policy**：无 safe / risk / allowed / denied / least-privilege 字段 |
+| D92 | **必须使用 disposable isolated runtime**：临时 DSH_HOME / profile / workspace / effects，完成后整体删除；绝不使用宿主 `~/.dsh` / production profile / 真实 credentials |
+| D93 | **Host Environment 默认最小化**：Env Allowlist 第一版只给 PATH / 临时 HOME / 临时 TMPDIR / 必要 DSH vars；secrets 与 credentials 默认不可见 |
+| D94 | **Cold Boot 与主动 Tool Invocation 分开**：Phase A 只启动-注册-初始化-shutdown（第一版）；Phase B 受控 probe（后半段）；绝不"启动后自动调用所有 tools"（`delete_all_files`/`send_payment` 语义未知） |
+| D95 | **Effects 必须 Observed，不按名称推断**：tool id=`http.get` ≠ network effect=true；实际 probe 捕获才算；未测 = NOT_PROBED |
+| D96 | **不要求 byte-identical**：metadata 非确定（observedAt/runId/临时路径）；normalized result → deterministic `resultDigest` |
+| D97 | **Cleanup 本身是 Attestation 结果**：crash 后临时 profile 删除成功 → cleanup PASS；残留 process / temp profile → cleanup FAIL |
+| D98 | **Observed 必须来自运行时注册表观察**：真实 DSH cold boot → runtime 正常注册 → observer 只读注册状态；**禁止 monkey-patch register()/provide()**（会改变插件执行语义），**禁止 grep 源码/静态分析猜 observed** |
+| D99 | **Observation Coverage 必须显式声明**：`complete | partial | unknown` 三态（不做百分比——无法证明 80%）；root observer 无法完整观察 child-context services/providers 时如实为 `partial`，cold boot 失败为 `unknown`；**partial 不得被解释为 authoritative absence**（`comparison.authoritative=false`）；beta.2 用 `requireCoverage: complete` 决定 DENY |
+
+### 9.5 命令面（冻结）
+
+```text
+/pack evidence attestation <file.dshpack> --key <private.pem> [--signer <name>] [--out <dir>]
+    → documents/<attestationDigest>.attestation.json（attestation 文档）
+    → attestation/<statementDigest>.json（Signed Evidence，subject = 重算 contentHash）
+
+验证复用统一入口：/pack evidence verify <attestation-envelope.json> --against <file.dshpack>
+```
+
+### 9.6 验收判据（冻结，R0–R14）
+
+| # | 场景 | 预期 |
+|---|------|------|
+| R0 | artifact A → runtime attestation subject | == 实际重算 contentHash |
+| R1 | cold boot 成功 | coldBoot PASS |
+| R2 | cold boot 失败 | attestation FAIL + production profile untouched |
+| R3 | runtime 注册 provider | observed.providers 出现稳定 id |
+| R4 | runtime 注册 service | observed.services 出现稳定 id |
+| R5 | runtime-only tool | observed.tools（补完 alpha.4 静态不可发现） |
+| R6 | runtime-only skill | observed.skills |
+| R7 | Declared A / Observed A | diff 为空 |
+| R8 | Declared A / Observed A+B | observedButNotDeclared=[B]（只报告不 DENY） |
+| R9 | Declared A+B / Observed A | declaredButNotObserved=[B] |
+| R10 | 真实 host token/env | runtime 不可见（env allowlist） |
+| R11 | runtime crash | 临时 profile/runtime cleanup → cleanup PASS |
+| R12 | 篡改 runtime attestation | Signed Evidence FAIL |
+| R13 | Artifact A attestation 挂到 B | subject FAIL |
+| R14 | Run1 注册 malicious tool + cleanup；Run2 clean artifact | observed 无残留（observation state 不跨 run 泄漏） |
+
+### 9.7 明确不做（scope guard）
+
+```text
+❌ OS-level tracing（strace / eBPF / Windows ETW / macOS Endpoint Security）——第一版
+❌ allow/deny / safe / risk 判断（beta.2 trust.yaml v2）
+❌ Phase B 受控 probe（beta.1 后半段）
+❌ 按 capability 名推断 effects（tool 叫 fetch ≠ network=true）
+❌ byte-identical 要求（metadata 非确定，normalized result 才 deterministic）
+```
+
 ---
 
-*本文档 v0.5.0 设计阶段定稿（2026-08-30）。本阶段冻结 D64–D88（+ H1–H3）；
+*本文档 v0.5.0 设计阶段定稿（2026-08-30）。本阶段冻结 D64–D99（+ H1–H3）；
 v0.4.2 的 D41–D63 不受影响。实现顺序：DESIGN 冻结（本文）→ `src/evidence/`
-模块（envelope / service / build-record / sbom / capability）→ pack 构建时采集
-→ CLI 接线 → P0–P12 + S0–S13 + C0–C10 负例测试 → typecheck + vitest 全绿 →
-CHANGELOG。*
+模块（envelope / service / build-record / sbom / capability / attestation）→
+pack 构建时采集 → CLI 接线 → P0–P12 + S0–S13 + C0–C10 + R0–R14 负例测试 →
+typecheck + vitest 全绿 → CHANGELOG。*

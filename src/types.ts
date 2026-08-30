@@ -413,3 +413,37 @@ export interface CapabilitySignResult extends EvidenceSignResult {
   /** Number of declared capabilities (providers + services; display + tests). */
   capabilityCount: number
 }
+
+/** Options for `/pack evidence attestation` (v0.5 beta.1, D89–D97). */
+export interface AttestationSignOptions {
+  /** Path to the private key PEM (pkcs8). */
+  key: string
+  /** Optional human-readable signer label (display only). */
+  signer?: string
+  /** Output directory (default: alongside the input pack). */
+  outDir?: string
+  /** Extra module dirs copied into the disposable profile node_modules (fixtures). */
+  extraModules?: string[]
+  /** Cold-boot child timeout in ms (default 60s). */
+  timeoutMs?: number
+}
+
+/**
+ * Result of `/pack evidence attestation`: the Runtime Attestation document
+ * (`documents/<attestationDigest>.attestation.json`) plus its Signed Evidence
+ * envelope (`attestation/<statementDigest>.json`) bound to the artifact
+ * contentHash (D89). Metadata is non-deterministic; `resultDigest` covers the
+ * normalized observation (D96).
+ */
+export interface AttestationSignResult extends EvidenceSignResult {
+  /** The standalone attestation document path. */
+  documentFile: string
+  /** Digest over the exact document bytes. */
+  attestationDigest: string
+  /** Deterministic digest over the normalized observation (D96). */
+  resultDigest: string
+  coldBootStatus: 'PASS' | 'FAIL'
+  cleanupStatus: 'PASS' | 'FAIL'
+  /** Number of observed capabilities (display + tests). */
+  observedCount: number
+}

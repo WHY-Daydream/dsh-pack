@@ -4,6 +4,8 @@
 >
 > `npm install @why-daydream/dsh-pack`
 
+**English** · [简体中文](./README.zh-CN.md)
+
 [![npm version](https://img.shields.io/npm/v/@why-daydream/dsh-pack)](https://www.npmjs.com/package/@why-daydream/dsh-pack)
 [![GitHub Release](https://img.shields.io/github/v/release/WHY-Daydream/dsh-pack)](https://github.com/WHY-Daydream/dsh-pack/releases/tag/v0.4.2)
 [![GHCR Protocol](https://img.shields.io/badge/GHCR-8%2F8%20PASS-brightgreen)](https://github.com/WHY-Daydream/dsh-pack/actions/runs/33292227705)
@@ -13,13 +15,13 @@
 
 ## Install
 
-### DSH Plugin（推荐）
+### DSH Plugin (recommended)
 
 ```bash
 dsh plugin --profile demo add @why-daydream/dsh-pack
 ```
 
-固定版本：
+Pin a version:
 
 ```bash
 dsh plugin --profile demo add @why-daydream/dsh-pack@0.4.2
@@ -112,7 +114,7 @@ v0.4.2 Governed      — image lock + trust.yaml + local prune + Real GHCR 8/8 P
        alt="dsh-pack Artifact Supply Chain Architecture" width="100%" max-width="880px" />
 </p>
 
-> 可编辑 Mermaid 源图见 [`docs/architecture.md`](docs/architecture.md)（README 默认展示 SVG 以便跨平台渲染一致）。
+> Editable Mermaid source: [`docs/architecture.md`](docs/architecture.md) (README renders the SVG by default for consistent cross-platform display).
 
 ### Identity Model — Four Layers
 
@@ -147,27 +149,27 @@ CLI can tighten policy, never weaken it
 
 ---
 
-## 命令面
+## Commands
 
-| 命令 | 作用 |
+| Command | Description |
 |------|------|
-| `/pack [name]` | 打包当前 Profile（`--strict` / `--out` / `--allow-secrets` / `--allow-nonportable`） |
-| `/pack <name> --portable` | 连本地 `file:`/`link:` 依赖一起 vendoring 打包 |
-| `/pack inspect <file>` | 查看包内容摘要（`--json`） |
-| `/pack verify <file>` | 校验完整性：Manifest / Config / Packages / Checksums / DSH Version / Signature（`--json`、`--require-signature`） |
-| `/pack install <file>` | 恢复到 `$DSH_HOME/profiles/<name>`（staging + 原子 swap + frozen-lockfile） |
-| `/pack diff <a> <b>` | 两包配置漂移对比：Manifest / Bundles / Config / Dependencies + configHash |
-| `/pack keygen [--out <dir>]` | 生成 ed25519 密钥对（v0.3：私钥 chmod 600 + 公钥 + keyId） |
-| `/pack sign <file> --key <pem> [--signer <name>]` | 嵌入签名 + provenance，产出 `<name>.signed.dshpack`（v0.3） |
-| `/pack image import` | 导入 `.dshpack` 为本地 Agent Image（tag / digest） |
-| `/pack image ls` | 列出本地 Agent Image 仓库 |
-| `/pack image tag` | 为本地 image 添加/移动 tag |
-| `/pack image rm` | 删除本地 image / tag |
-| `/pack image lock` | 将 mutable remote tag 冻结为 immutable manifest digest |
-| `/pack image prune` | Mark-and-sweep GC：清理 unreachable manifest/blob（dry-run 默认，`--apply` 删除） |
-| `/pack push <localRef> <remoteRef>` | 推送 Agent Image 到 OCI Registry（GHCR / Docker Hub） |
-| `/pack pull <remoteRef>` | 拉取 Agent Image 并验证完整性 |
-| `/pack run <ref> [--require-trusted]` | 运行 Agent Image（完整性校验 + 信任策略 + 临时 runtime 或持久 Profile） |
+| `/pack [name]` | Pack the current profile (`--strict` / `--out` / `--allow-secrets` / `--allow-nonportable`) |
+| `/pack <name> --portable` | Pack with local `file:`/`link:` dependencies vendored |
+| `/pack inspect <file>` | Show an artifact summary (`--json`) |
+| `/pack verify <file>` | Verify integrity: Manifest / Config / Packages / Checksums / DSH Version / Signature (`--json`, `--require-signature`) |
+| `/pack install <file>` | Restore to `$DSH_HOME/profiles/<name>` (staging + atomic swap + frozen-lockfile) |
+| `/pack diff <a> <b>` | Compare configuration drift between two packs: Manifest / Bundles / Config / Dependencies + configHash |
+| `/pack keygen [--out <dir>]` | Generate an ed25519 keypair (v0.3: private key chmod 600 + public key + keyId) |
+| `/pack sign <file> --key <pem> [--signer <name>]` | Embed a signature + provenance, produce `<name>.signed.dshpack` (v0.3) |
+| `/pack image import` | Import a `.dshpack` as a local Agent Image (tag / digest) |
+| `/pack image ls` | List local Agent Image repositories |
+| `/pack image tag` | Add / move a tag on a local image |
+| `/pack image rm` | Remove a local image / tag |
+| `/pack image lock` | Freeze a mutable remote tag to an immutable manifest digest |
+| `/pack image prune` | Mark-and-sweep GC: remove unreachable manifest/blob (dry-run default, `--apply` deletes) |
+| `/pack push <localRef> <remoteRef>` | Push an Agent Image to an OCI Registry (GHCR / Docker Hub) |
+| `/pack pull <remoteRef>` | Pull an Agent Image and verify integrity |
+| `/pack run <ref> [--require-trusted]` | Run an Agent Image (integrity + trust policy + temporary runtime or persistent profile) |
 
 ---
 
@@ -198,41 +200,41 @@ Protocol-tested against GHCR: **8/8 items PASS** ([run #33292227705](https://git
 
 ### DSH Community
 
-📢 [DSH Discussion](https://github.com/WHY-Daydream/dsh-pack/discussions) — 社区讨论与使用交流
+📢 [DSH Discussion](https://github.com/WHY-Daydream/dsh-pack/discussions) — community discussion and usage
 
 ---
 
-## 验证状态
+## Verification Status
 
-| 维度 | 状态 |
+| Dimension | Status |
 |------|------|
-| 本地测试套件 | **140 tests / 21 files** — 全部通过（含 mock OCI registry、signing E2E、trust policy、image lock、GC prune） |
-| typecheck (`tsc -b`) | ✅ 通过 |
+| Local test suite | **140 tests / 21 files** — all passing (mock OCI registry, signing E2E, trust policy, image lock, GC prune) |
+| typecheck (`tsc -b`) | ✅ Passing |
 | lint (`oxlint`) | ✅ 0 errors |
-| Real GHCR E2E | ✅ **8/8 PASS**（run 33292227705，2026-08-30） |
-| npm tgz clean-room | ✅ 安装 + import 通过 |
-| npm registry | ✅ 发布 + 安装 + import 通过 |
+| Real GHCR E2E | ✅ **8/8 PASS** (run 33292227705, 2026-08-30) |
+| npm tgz clean-room | ✅ install + import passing |
+| npm registry | ✅ published + install + import passing |
 
 ---
 
 ## Known Limitations
 
-1. **pnpm v11 虚拟存储布局**：`--portable` 恢复后，传递的 `file:` 依赖可能位于 `.pnpm` 虚拟存储而非顶层 `node_modules`。功能与 frozen install 闭环成立；若要求 node_modules 布局逐字节一致，受 pnpm 行为差异限制。
-2. **`--portable` 实现中修复的三个真实工程坑**（均已补回归测试，详见 `DESIGN.md` Appendix D 与 `TRACEABILITY.md`）：
-   - 异步 staging 竞态；
-   - 重写后的 `package.json` 被 copy 覆盖；
-   - pnpm lockfile 项目相对路径语义。
-3. **不可复现项**：floating git 分支（无 `#commit` 锚点，`--strict` 下失败）；home 层与 `--patch` overlay（machine/invocation-local，不打包但记录告警）；`--allow-nonportable` 产物 `installable:false` 且 install 默认拒绝。
-4. **安全边界**：`.dshpack` 内禁止真实 secret（组合树扫描 + redact + `.env.example`，install 永不恢复 secret）；archive 提取防路径逃逸与 symlink/hardlink/device 条目。
+1. **pnpm v11 virtual-store layout**: after `--portable` restore, transitive `file:` dependencies may live under `.pnpm` virtual storage instead of top-level `node_modules`. Functionality and the frozen-install loop still hold; byte-for-byte `node_modules` layout parity is limited by pnpm behavior, not a package defect.
+2. **Three real engineering pitfalls fixed in `--portable`** (all covered by regression tests; see `DESIGN.md` Appendix D and `TRACEABILITY.md`):
+   - async staging race (early `return` before `await` deleted the staging dir → intermittent ENOENT);
+   - the rewritten `package.json` being overwritten by the copy step;
+   - pnpm lockfile's project-relative `file:` semantics (addressed relative to the project root, not the declaring dir).
+3. **Non-reproducible items**: floating git branches (no `#commit` anchor, fail under `--strict`); home-layer and `--patch` overlays (machine/invocation-local, not packed but warned); `--allow-nonportable` output is `installable:false` and install refuses it by default.
+4. **Security boundary**: `.dshpack` forbids real secrets (composite-tree scan + redaction to `${VAR}` + `.env.example`; install never restores secrets); archive extraction guards against path traversal and symlink/hardlink/device entries.
 
 ---
 
-## 文档
+## Docs
 
-- `DESIGN.md` — 协议冻结（格式、哈希算法、安全模型、命令行为）
-- `DESIGN-v0.4.2.md` — 四层 Governance 设计（image lock / trust.yaml / local prune / GHCR 8/8）
-- `TRACEABILITY.md` — 冻结决策 → 源文件 → 测试用例逐条追踪
-- `CHANGELOG.md` — 版本历史
+- `DESIGN.md` — frozen protocol (format, hash algorithms, security model, command behavior)
+- `DESIGN-v0.4.2.md` — four-layer Governance design (image lock / trust.yaml / local prune / GHCR 8/8)
+- `TRACEABILITY.md` — trace each frozen decision → source file → test case
+- `CHANGELOG.md` — version history
 - `LICENSE` — MIT
 
 ---

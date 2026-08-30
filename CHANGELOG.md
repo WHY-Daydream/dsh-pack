@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 
+- **v0.5.0-alpha.4（Declared Capability Manifest，D81–D88 冻结，DESIGN-v0.5.0.md §8）**：
+  纯 artifact inspection、无 cold boot（绝不为生成 declared manifest 执行插件
+  代码）。调研结论：harness profile schema（app-boot）只有 bundles 字段，
+  providers/services 可从 composition/patch 行静态发现（行 id=稳定 capability
+  id），tools/skills 只能运行时注册 → 静态不可发现（D86/C10）。subject 绑定
+  实际 contentHash（D82）；Declared 与 Observed 永久分离，只生成 declared
+  （D83）；稳定 id/kind/declaredBy 结构化 identity（D84/D85）；manifest 只
+  描述能力不做 allow/deny（D87）；deterministic（D88）。C0–C10 测试矩阵。
+  明确不做：observed/effects（beta.1）、trust.yaml v2（beta.2）、cold boot、
+  按名称推断权限。
 - **v0.5.0-alpha.3（SBOM Evidence，D73–D80 冻结，DESIGN-v0.5.0.md §7）**：
   CycloneDX 1.7 JSON 为唯一 canonical SBOM format（D73）；SBOM 只消费
   artifact/staged lockfile + vendored + embedded metadata + dependency

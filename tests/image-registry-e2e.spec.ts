@@ -8,7 +8,7 @@
  * DSH_REGISTRY_USERNAME/TOKEN). Criterion 6 needs pnpm (run materializes).
  */
 import { execFile } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -268,6 +268,82 @@ describe('v0.4.1 North-Star E2E (local OCI mock registry)', () => {
       delete process.env['DSH_REGISTRY_USERNAME']
       delete process.env['DSH_REGISTRY_TOKEN']
       expect(pushed.ociManifestDigest).toMatch(/^sha256:[0-9a-f]{64}$/)
+    } finally {
+      await mock.stop()
+    }
+  })
+})
+
+describe('image lock（DESIGN-v0.4.2.md §9，D46–D49）', () => {
+  it('T0: tag 漂移后 locked digest 仍拉旧 artifact（D46/D48）', async () => {
+    const root = tempRoot('lock-t0')
+    const mock = new MockRegistry()
+    await mock.start()
+    try {
+      const a = await makeSignedPack(root, mkdtempSync(join(root, 'out-')), 0.3)
+      const b = await makeSignedPack(root, mkdtempSync(join(root, 'out-')), 0.7)
+      const { images } = makeImageEnv(root)
+      await images.import(a.file, { tag: 'org/agent:v1' })
+      const pushedA = await images.push('org/agent:v1', remoteRefOf(mock, 'org/agent', 'prod'))
+
+      // lock prod → immutable @manifestDigestA
+      const lockFile = join(root, 'dsh-lock.json')
+      const locked = await images.lock(remoteRefOf(mock, 'org/agent', 'prod'), { file: lockFile })
+      expect(locked.resolved).toBe(remoteDigestRefOf(mock, 'org/agent', pushedA.ociManifestDigest))
+      expect(locked.manifestDigest).toBe(pushedA.ociManifestDigest)
+      const stored = JSON.parse(readFileSync(lockFile, 'utf8'))
+      expect(stored.images[remoteRefOf(mock, 'org/agent', 'prod')].manifestDigest).toBe(pushedA.ociManifestDigest)
+
+      // tag drift: prod → manifest B
+      await images.import(b.file, { tag: 'org/agent:v2' })
+      await images.push('org/agent:v2', remoteRefOf(mock, 'org/agent', 'prod'))
+
+      // using the lock (pull the locked resolved ref) still gets A
+      const { images: imagesB } = makeImageEnv(join(root, 'fresh'))
+      const pulled = await imagesB.pull(locked.resolved)
+      expect(pulled.contentHash).toBe(pushedA.contentHash)
+    } finally {
+      await mock.stop()
+    }
+  })
+
+  it('T1: 锁文件写不存在的 digest → pull FAIL（registry 404，nothing imported）', async () => {
+    const root = tempRoot('lock-t1')
+    const mock = new MockRegistry()
+    await mock.start()
+    try {
+      const bogusDigest = 'sha256:' + 'a'.repeat(64)
+      const { images } = makeImageEnv(join(root, 'fresh'))
+      const attempt = await images.pull(`127.0.0.1:${mock.port}/org/agent@${bogusDigest}`).catch((error: Error) => error)
+      expect(attempt).toBeInstanceOf(Error)
+      expect((attempt as Error).message).toMatch(/manifest GET failed/)
+      expect((await images.list()).length).toBe(0)
+    } finally {
+      await mock.stop()
+    }
+  })
+
+  it('T2: registry 返回与 locked digest 不匹配的 manifest → transport integrity FAIL', async () => {
+    const root = tempRoot('lock-t2')
+    const mock = new MockRegistry()
+    await mock.start()
+    try {
+      const a = await makeSignedPack(root, mkdtempSync(join(root, 'out-')), 0.3)
+      const b = await makeSignedPack(root, mkdtempSync(join(root, 'out-')), 0.7)
+      const { images } = makeImageEnv(root)
+      await images.import(a.file, { tag: 'org/agent:v1' })
+      const pushedA = await images.push('org/agent:v1', remoteRefOf(mock, 'org/agent', 'prod'))
+      await images.import(b.file, { tag: 'org/agent:v2' })
+      await images.push('org/agent:v2', remoteRefOf(mock, 'org/agent', 'dev'))
+
+      // malicious registry: serve dev's manifest bytes under A's locked digest
+      mock.tamper = { manifestSwap: { forDigest: pushedA.ociManifestDigest, serveTag: 'dev' } }
+      const { images: imagesB } = makeImageEnv(join(root, 'fresh'))
+      const attempt = await imagesB.pull(`127.0.0.1:${mock.port}/org/agent@${pushedA.ociManifestDigest}`)
+        .catch((error: Error) => error)
+      expect(attempt).toBeInstanceOf(Error)
+      expect((attempt as Error).message).toMatch(/manifest digest mismatch.*transport integrity failure/)
+      expect((await imagesB.list()).length).toBe(0) // nothing imported
     } finally {
       await mock.stop()
     }

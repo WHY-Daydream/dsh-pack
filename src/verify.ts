@@ -161,7 +161,7 @@ export async function verifyPack(buffer: Buffer, context: VerifyContext): Promis
           // holder signed the anchor; VERIFIED additionally requires the
           // keyId (cryptographic fingerprint, not the --signer label) to be
           // in the local trust whitelist.
-          const detailParts = [`VALID (ed25519, Key SHA256:${verdict.keyId.slice(0, 12)}…)`]
+          const detailParts = [`VALID (ed25519, Key SHA256:${verdict.keyId})`]
           if (existsSync(provenancePath)) {
             try {
               const provenance = JSON.parse(readFileSync(provenancePath, 'utf8')) as {

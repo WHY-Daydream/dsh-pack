@@ -12,7 +12,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { installPack } from '../install.ts'
 import { validateManifest } from '../manifest.ts'
@@ -24,8 +24,16 @@ import { parseReference, repository } from './reference.ts'
 import { ImageResolveError, resolveImage, type ResolvedImage } from './resolver.ts'
 import type { ImageStore } from './store.ts'
 import { applyTrustPolicy, type TrustPolicy } from './trust.ts'
+import { loadRegistryCredentials } from './registry/auth.ts'
+import { RegistryClient } from './registry/client.ts'
 import { pullImage, type PullResult } from './registry/pull.ts'
 import { pushImage, type PushResult } from './registry/push.ts'
+import { parseRemoteReference, registryBaseUrl, repoPath } from './registry/reference.ts'
+import type { DshContentDigest, OciManifestDigest } from './digests.ts'
+import { DEFAULT_LOCKFILE, addLockEntry, loadLockfile, saveLockfile } from './lockfile.ts'
+import {
+  loadTrustPolicy, mergeCliTightening, resolveTrustPolicy, type TrustPolicyDecision,
+} from './trust-policy.ts'
 
 export interface ImportOptions {
   /** Apply a mutable tag after import, e.g. `why-daydream/agent:v1`. */
@@ -66,6 +74,49 @@ export interface RunResult {
   /** hand-off command (temporary runtime: `dsh --profile .run-<uuid>`). */
   boot: string
   temporary: boolean
+}
+
+export interface LockOptions {
+  /** lockfile path (default `dsh-lock.json` in cwd). */
+  file?: string
+}
+
+export interface LockResult {
+  mutableRef: string
+  /** immutable ref: `repo@sha256:<manifestDigest>` (D48). */
+  resolved: string
+  manifestDigest: OciManifestDigest
+  file: string
+}
+
+export interface PruneEntry {
+  digest: string
+  bytes: number
+}
+
+export interface RuntimeCacheEntry {
+  profile: string
+  bytes: number
+}
+
+export interface PruneResult {
+  reachableManifests: number
+  reachableBlobs: number
+  orphanManifests: PruneEntry[]
+  orphanBlobs: PruneEntry[]
+  runtimeCache: RuntimeCacheEntry[]
+  reclaimableBytes: number
+  applied: boolean
+}
+
+/** Recursive directory size in bytes (for the prune runtime report, D62). */
+function dirBytes(dir: string): number {
+  let total = 0
+  for (const name of readdirSync(dir)) {
+    const absolute = join(dir, name)
+    total += statSync(absolute).isDirectory() ? dirBytes(absolute) : statSync(absolute).size
+  }
+  return total
 }
 
 /** v0.4 default in-process image service (LocalImageStore backend). */
@@ -196,15 +247,100 @@ export class DefaultImageService {
     })
   }
 
+  /**
+   * Lock a mutable remote tag to its immutable OCI manifest digest
+   * (DESIGN-v0.4.2.md §9, D46/D48): resolve the remote manifest (the OCI
+   * envelope is validated), pin `repo@sha256:<manifestDigest>` into
+   * dsh-lock.json. Lock ≠ Trust (D47) — the lockfile is a version pin only;
+   * running a locked image still runs the full OCI → DSH → Signature → Trust
+   * chain (D49).
+   */
+  async lock(remoteRefStr: string, options?: LockOptions): Promise<LockResult> {
+    const remoteRef = parseRemoteReference(remoteRefStr)
+    const client = new RegistryClient({
+      baseUrl: registryBaseUrl(remoteRef.registry),
+      repo: repoPath(remoteRef),
+      credentials: loadRegistryCredentials(remoteRef.registry),
+    })
+    const requested = remoteRef.digest ?? (remoteRef.tag as string)
+    const { digest } = await client.getManifest(requested)
+    if (remoteRef.digest !== undefined && digest !== remoteRef.digest) {
+      throw new Error(`manifest digest mismatch: expected ${remoteRef.digest}, actual ${digest} (transport integrity failure)`)
+    }
+    const resolved = `${repository(remoteRef)}@${digest}`
+    const file = options?.file ?? DEFAULT_LOCKFILE
+    const lockfile = addLockEntry(loadLockfile(file), remoteRefStr, digest, resolved)
+    saveLockfile(file, lockfile)
+    return { mutableRef: remoteRefStr, resolved, manifestDigest: digest, file }
+  }
+
+  /**
+   * Local CAS garbage collection (DESIGN-v0.4.2.md §12, D57–D63): mark-and-
+   * sweep reachability over refs → manifests → artifact blobs. Only
+   * UNREACHABLE objects are removed (D58); a blob reachable through ANY
+   * manifest/ref is kept (D60). Default dry-run (D61); `--apply` performs the
+   * destructive sweep. Runtime cache is REPORT-ONLY (D62 — no active-runtime
+   * marker exists yet, conservative). dsh-lock.json / trust.yaml are NOT GC
+   * roots (D63).
+   */
+  async prune(options?: { apply?: boolean }): Promise<PruneResult> {
+    // Phase 1 — Mark (D59/D60): refs → manifest → artifact blob
+    const reachableManifests = new Set<string>()
+    const reachableBlobs = new Set<string>()
+    for (const ref of await this.store.listRefs()) {
+      reachableManifests.add(ref.manifestDigest)
+      const manifest = await this.store.getManifest(ref.manifestDigest)
+      if (manifest !== undefined) reachableBlobs.add(manifest.artifact.digest)
+    }
+
+    // Phase 2 — Sweep (compute; delete only with --apply)
+    const orphanManifests: PruneEntry[] = []
+    for (const digest of await this.store.listManifestDigests()) {
+      if (reachableManifests.has(digest)) continue
+      orphanManifests.push({ digest, bytes: (await this.store.getManifestSize(digest)) ?? 0 })
+    }
+    const orphanBlobs: PruneEntry[] = []
+    for (const digest of await this.store.listBlobDigests()) {
+      if (reachableBlobs.has(digest)) continue
+      orphanBlobs.push({ digest, bytes: (await this.store.getBlobSize(digest)) ?? 0 })
+    }
+
+    // Runtime cache — conservative report-only (D62)
+    const runtimeCache: RuntimeCacheEntry[] = []
+    const profilesDir = join(this.context.home, 'profiles')
+    if (existsSync(profilesDir)) {
+      for (const name of readdirSync(profilesDir)) {
+        if (!name.startsWith('.run-')) continue
+        runtimeCache.push({ profile: name, bytes: dirBytes(join(profilesDir, name)) })
+      }
+    }
+
+    const reclaimableBytes = [...orphanManifests, ...orphanBlobs].reduce((sum, e) => sum + e.bytes, 0)
+    if (options?.apply === true) {
+      for (const entry of orphanManifests) await this.store.removeManifest(entry.digest)
+      for (const entry of orphanBlobs) await this.store.removeBlob(entry.digest as DshContentDigest)
+    }
+    return {
+      reachableManifests: reachableManifests.size,
+      reachableBlobs: reachableBlobs.size,
+      orphanManifests,
+      orphanBlobs,
+      runtimeCache,
+      reclaimableBytes,
+      applied: options?.apply === true,
+    }
+  }
+
   /** Ensure a remote ref's image is local: pull when missing (cache-only policy). */
-  private async ensureLocal(refStr: string): Promise<void> {
+  private async ensureLocal(refStr: string): Promise<PullResult | undefined> {
     try {
       await resolveImage(this.store, parseReference(refStr))
+      return undefined // already local (tag mirror from a previous pull)
     } catch (error) {
       if (!(error instanceof ImageResolveError)) throw error
       // not local → digest-first pull (verify → trust → import). Trust policy
       // enforcement stays in run() — a rejected image must fail before boot.
-      await pullImage(this.store, refStr, { installedDshVersion: this.context.installedDshVersion })
+      return pullImage(this.store, refStr, { installedDshVersion: this.context.installedDshVersion })
     }
   }
 
@@ -223,10 +359,17 @@ export class DefaultImageService {
     const ref = parseReference(refStr)
     // remote refs: ensure the image is local first — pull (digest-first,
     // verify → trust → import) when the tag/digest is not in the store.
+    let localRef = refStr
     if (ref.registry !== undefined) {
-      await this.ensureLocal(refStr)
+      const pulled = await this.ensureLocal(refStr)
+      if (pulled !== undefined && ref.digest !== undefined) {
+        // Digest-form remote ref: the local store is keyed by the DSH manifest
+        // digest (imageManifestDigest), NOT the OCI manifest digest — resolve
+        // the pulled image through its DSH manifest digest.
+        localRef = `local@${pulled.dshManifestDigest}`
+      }
     }
-    const resolved = await resolveImage(this.store, ref)
+    const resolved = await resolveImage(this.store, parseReference(localRef))
     const bytes = await this.store.getBlob(resolved.artifactDigest)
     if (bytes === undefined) {
       throw new ImageResolveError(`artifact blob ${resolved.artifactDigest} missing from local store`)
@@ -242,11 +385,25 @@ export class DefaultImageService {
       throw new Error(`image verification failed before boot: ${failed.join('; ')}`)
     }
 
-    // 2. trust policy (VALID ≠ TRUSTED, D19/D29)
+    // 2. trust policy (VALID ≠ TRUSTED, D19/D29): the LOCAL trust.yaml policy
+    //    (DESIGN-v0.4.2.md D50–D56) applies to REMOTE images; CLI can only
+    //    TIGHTEN it (D54). Local refs keep the v0.4.1 CLI-only semantics (D53).
     const signatureSection = report.sections.find((s) => s.name === 'Signature')
+    let decision: TrustPolicyDecision = {
+      requireSignature: options?.requireSignature === true,
+      requireTrusted: options?.requireTrusted === true,
+    }
+    if (ref.registry !== undefined) {
+      // D54: CLI can only TIGHTEN the local policy — effective = policy OR CLI
+      decision = mergeCliTightening(resolveTrustPolicy(loadTrustPolicy(this.context.home), repository(ref)), {
+        ...(options?.requireSignature === true ? { requireSignature: true } : {}),
+        ...(options?.requireTrusted === true ? { requireTrusted: true } : {}),
+      })
+    }
     const verdict = applyTrustPolicy(signatureSection, {
-      ...(options?.requireSignature === true ? { requireSignature: true } : {}),
-      ...(options?.requireTrusted === true ? { requireTrusted: true } : {}),
+      ...(decision.requireSignature ? { requireSignature: true } : {}),
+      ...(decision.requireTrusted ? { requireTrusted: true } : {}),
+      ...(decision.trustedKeys !== undefined ? { trustedKeys: decision.trustedKeys } : {}),
     })
     if (!verdict.ok) throw new Error(`image trust policy rejected: ${verdict.error}`)
 

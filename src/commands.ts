@@ -104,6 +104,13 @@ function fmtValue(value: unknown): string {
   return JSON.stringify(value)
 }
 
+/** Format bytes for the prune report (B / KB / MB). */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 /** Render a /pack diff report (v0.2, four domains + configHash verdict). */
 function renderDiff(diff: PackDiff): string {
   const lines: string[] = [`Profile Drift: ${diff.fileA} vs ${diff.fileB}`, '']
@@ -309,8 +316,50 @@ export async function runCommand(
             await images.remove(ref)
             return { kind: 'success', text: `✓ removed ${ref}` }
           }
+          case 'lock': {
+            const ref = args[0]
+            if (ref === undefined) {
+              return { kind: 'error', text: '✗ usage: /pack image lock <remoteRef> [--file <path>]' }
+            }
+            const file = typeof invocation.flags['file'] === 'string' ? invocation.flags['file'] : undefined
+            const result = await images.lock(ref, file !== undefined ? { file } : {})
+            return {
+              kind: 'success',
+              text: `Resolved:\n\n${result.mutableRef}\n        ↓\n${result.resolved}\n\nLock written: ${result.file}`,
+            }
+          }
+          case 'prune': {
+            const apply = invocation.flags['apply'] === true
+            const result = await images.prune(apply ? { apply: true } : {})
+            const lines: string[] = [
+              'Local Image Prune',
+              '',
+              `Reachable manifests   ${result.reachableManifests}`,
+              `Reachable blobs       ${result.reachableBlobs}`,
+              '',
+            ]
+            if (result.orphanManifests.length > 0) {
+              lines.push('Unreferenced manifests')
+              for (const entry of result.orphanManifests) lines.push(`  ${entry.digest}`)
+              lines.push('')
+            }
+            if (result.orphanBlobs.length > 0) {
+              lines.push('Unreferenced blobs')
+              for (const entry of result.orphanBlobs) lines.push(`  ${entry.digest}   ${formatBytes(entry.bytes)}`)
+              lines.push('')
+            }
+            if (result.runtimeCache.length > 0) {
+              lines.push('Runtime cache (conservative, not deleted)')
+              for (const entry of result.runtimeCache) lines.push(`  ${entry.profile}   ${formatBytes(entry.bytes)}`)
+              lines.push('')
+            }
+            lines.push(result.applied
+              ? `Reclaimed: ${formatBytes(result.reclaimableBytes)}`
+              : `Reclaimable (dry-run): ${formatBytes(result.reclaimableBytes)}`)
+            return { kind: 'success', text: lines.join('\n') }
+          }
           default:
-            return { kind: 'error', text: `✗ unknown image subcommand ${JSON.stringify(imageSub)} (import | ls | inspect | tag | rm)` }
+            return { kind: 'error', text: `✗ unknown image subcommand ${JSON.stringify(imageSub)} (import | ls | inspect | tag | rm | lock | prune)` }
         }
       }
       case 'run': {

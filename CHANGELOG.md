@@ -5,10 +5,139 @@
 
 ## [Unreleased]
 
-- **v0.4.2 规划**：trust.yaml 细粒度策略；image lock（tag → digest 固定）；
-  registry 引用计数 / GC；GHCR 真实凭据验证（CI/手动）。
+- **v0.4.2 剩余**：image lock（`/pack image lock <ref>` → 真实 manifestDigest +
+  dsh-lock.json）；trust.yaml（registries 级 requireSignature/requireTrusted/
+  trustedKeys）；local image prune（mark-and-sweep reachability GC：
+  只删不可达 manifest/blob，默认 dry-run、`--apply` 才删除；runtime cache
+  保守报告不删除（D62）；不做 Registry GC——那是 Registry Server 的职责）。
 - **v0.5 规划**：Encryption（私密插件源码 / 企业离线分发场景才需要）。
   Signing 已知边界（吊销 / 轮换 / 多签名 / 过期）同列后续。
+
+## [v0.4.2] - 2026-08-29（第一阶段：Real GHCR Protocol Acceptance）
+
+### Distribution Governance 第一阶段（D41–D45 冻结）
+
+目的：**不是再证明业务逻辑**，而是验证"我们的 OCI 客户端真的能和 GHCR
+对话"——从协议兼容升级为真实公共 OCI Registry 实证兼容。暂不实现
+image lock / trust.yaml / prune（跑通真实 GHCR 后再做，顺序见 DESIGN
+§8）。
+
+### Added
+
+- **D41–D45 冻结**（DESIGN-v0.4.2.md）：
+  - D41 Real GHCR E2E 属于协议验收，不替代 mock registry 单测（两层并存）
+  - D42 GitHub Actions 默认 `GITHUB_TOKEN`，不要求长期 PAT（本地 CLI 才用
+    PAT classic）
+  - D43 CI GHCR E2E 不在 fork PR 执行（不向不可信代码暴露 package write）
+  - D44 Real registry 成功必须 OCI integrity + DSH integrity +
+    Signature/Trust 三成兼须
+  - D45 Remote Registry credentials 永远不属于 Artifact / Provenance /
+    Image Manifest
+- **GHCR 8 项协议验收清单**（冻结入 DESIGN §3）：401+Bearer challenge /
+  token scope=pull,push / blob HEAD 404→200 / POST uploads/ → Location →
+  PUT ?digest → 201 / OCI manifest PUT Content-Type / tag pull
+  Content-Type+Docker-Content-Digest / digest pull 一致性 / DSH 层
+  contentHash+Signature+Trust+run configHash。
+- **CI 两层模型**：
+  - `.github/workflows/pr-ci.yml`：普通 PR CI（typecheck + 103 测试含
+    mock registry + signing E2E，**不碰真实 GHCR**；fork 安全，最小权限
+    `contents: read`）。
+  - `.github/workflows/ghcr-e2e.yml`：`workflow_dispatch` 手动触发（初期），
+    `packages: write` + `GITHUB_TOKEN`（job 级 env 注入，结束即消失），
+    测试 namespace `ghcr.io/<owner>/dsh-pack-e2e:run-<run_id>`（正式包
+    与测试包隔离，新 package 默认 private 正好覆盖认证 E2E）。
+- **`scripts/ghcr-e2e.mjs`**：Internet North-Star 脚本——8 项协议断言全
+  覆盖（raw probe 验证 ① 401+challenge、② token scope、⑥ Content-Type+
+  Docker-Content-Digest==bytes；服务层验证 ③④⑤⑦⑧），env 凭据，日志纪律
+  （只记 method/host/repo/status/scope，永不记 token）。缺 env 时 exit 2
+  明确退出。
+
+### image lock（D46–D49 冻结，与真实 GHCR 验收并行开发）
+
+- **`/pack image lock <remoteRef> [--file <path>]`**：mutable remote tag →
+  immutable OCI manifest digest（D46/D48；锁对象是 **manifestDigest**，非
+  contentHash/blobDigest）。输出 `Resolved: <ref> ↓ <repo@sha256:...>` +
+  `Lock written: dsh-lock.json`。
+- **`dsh-lock.json` 最小 schema**（D47）：`{ schemaVersion: 1, images: {
+  "<mutable ref>": { "resolved": "repo@sha256:<manifestDigest>",
+  "manifestDigest": "sha256:..." } } }`——只钉版本，**不承载 Signature/
+  Trust**；contentHash/blobDigest/signature/trust/configHash 一律不塞
+  （都可从 immutable manifest 再解析）。
+- **`src/image/lockfile.ts`**：load/save/addLock/validate（broken file
+  loudly FAIL）；`service.lock()` resolve 远程 manifest（OCI envelope 校验）
+  后写入；digest 形态输入也做 transport digest 校验。
+- **Lock ≠ Trust（D49）**：locked image 运行时仍完整执行 OCI → DSH →
+  Signature → Trust 验证链（不因来自 lockfile 跳过 v0.3/v0.4 安全链）。
+- **验收判据（mock registry）**：T0 tag 漂移后 locked digest 仍拉旧
+  artifact ✓；T1 锁文件不存在 digest → pull FAIL（404，nothing imported）✓；
+  T2 registry 返回与 locked digest 不匹配的 manifest → transport
+  integrity FAIL ✓（mock 新增 manifest-swap tamper 模拟恶意 registry）。
+
+### trust.yaml（D50–D56 冻结，Remote Image Execution Policy）
+
+- **定位**：Trust Policy ≠ "trusted keys 配置文件"——是 `$DSH_HOME/trust.yaml`
+  的**本地执行策略**（Host/Environment Policy，不进 `.dshpack`/OCI
+  manifest/provenance/registry metadata，D50）；与 `image lock` 分层：
+  lock 解决"运行哪个版本"，trust.yaml 解决"这个版本允不允许运行"。
+- **最小 schema**（version 1 + registries map）：`requireSignature` /
+  `requireTrusted` / `trustedKeys`（keyId fingerprint，D55，**不用 signer
+  label**）；按 **remote repository pattern** 匹配（D51），
+  **most-specific-match wins**（最长 pattern，等长字典序，与文件行序无关，
+  D52）；无匹配规则 → 保持 v0.4.1 行为（D53，backward-compatible）。
+- **CLI 只能收紧不能放宽**（D54）：effective = Policy OR CLI；
+  `--require-*` 永远无法被策略中的 false 降级。
+- **Pull 与 Run 分离**（D56，cache ≠ trust）：pull 只做 OCI+DSH integrity
+  + Signature metadata → 允许进 cache；run 才评估 trust.yaml → FAIL 在
+  materialize/pnpm 前（`allowPull` 留待以后）。
+- **`src/image/trust-policy.ts`**：Policy Engine（load/validate/glob 匹配/
+  most-specific/mergeCli 决策）；`image/trust.ts` 扩展 trustedKeys 指纹
+  检查（D55）；`service.run` 对 remote ref 应用策略（local ref 保持 CLI
+  语义）。**验签复用 v0.3/v0.4 现有实现，未重新实现。**
+- **测试**（mock registry）：T0 无策略保持 v0.4.1 ✓ / T1 unsigned run FAIL
+  ✓ / T2 signed unknown key PASS ✓ / T3-T4 trustedKeys 拒/放 ✓ / T5
+  most-specific ✓ / T6 CLI 收紧 ✓ / T7 策略独立生效 ✓ / T8 signer label
+  无关 ✓ / T9 untrusted pull cache 成功 + run boot 前 FAIL ✓ /
+  **lock×trust 组合**：同一 lock 版本不变，trustedKeys 移除签名者后
+  trust FAIL（Version identity 与 Trust policy 正交）✓。
+
+### 工程笔记（trust.yaml 阶段抓到 3 个真问题）
+
+- **run() digest 形态 remote ref 无法本地解析**（真 bug）：本地 store 以
+  DSH manifest digest 为键，OCI manifest digest 查不到——`ensureLocal`
+  吞掉 resolve 错误后 run 再 resolve 仍失败（会连带挂掉 ghcr-e2e.mjs 的
+  `run(digestRef)`）。修复：ensureLocal 返回 PullResult，digest 形态经
+  `local@<dshManifestDigest>` 解析。
+- **trust-policy glob 通配符失效**（真 bug）：escapeRegExp 转义类漏 `*`，
+  `replaceAll('\\*', '.*')` 找不到转义形式，裸 `*` 被当作量词 → 所有含
+  `*` 的 pattern 不匹配。
+- **putManifest 幂等比较误报**（真 bug，与 \n 那次同类）：字节级比较对
+  import（插入序）与 pull（canonical 排序序）构造的同一语义 manifest
+  误报 "already exists"。修复：canonicalJson 归一化后**语义比较**。
+
+### 验收状态
+
+- 本地验证：`node --check` 语法 OK；lib 导入路径全部存在；本地测试套件
+  **138 全绿**（20 文件，+6 lock +20 trust +9 prune +2 fixture 测试）。
+- **真实 GHCR 运行须在 GitHub Actions `workflow_dispatch` 执行**（需
+  `GITHUB_TOKEN` + `packages: write`，此环境无凭据不可本地运行真协议）——
+  **Release Gate（§10）：GHCR 8/8 全过后才允许 v0.4.2 merge/tag**。
+  GHCR Gate 现场记录（2026-08-30，详见 DESIGN §13）：
+  - run #1 BLOCKED（pnpm 未入 PATH → pnpm/action-setup 修复）
+  - run #2 BLOCKED（CI 缺 deepseek-harness sibling → 双 checkout + pin +
+    build:lib:host 修复）
+  - run #3 **PARTIAL**：① GET /v2/ → 401 + Bearer challenge ✅、② Bearer
+    token 获取 ✅；push 前客户端 ImageReference 校验拦截 uppercase
+    namespace（fixture 用 `WHY-Daydream`，OCI 只允许小写）——GHCR 未收到
+    push，⑥⑦⑧ 及其余项 NOT RUN。修复：`scripts/ghcr-fixture.mjs`
+    canonical lowercase（`why-daydream/dsh-pack-e2e`），target/URL/scope
+    共用同一字符串；Parser 不放宽（回归测试钉死）。
+  - run #4 **8/8 PASS ✅**（run 33292227705，head 5139074）：真实 GHCR
+    协议 8 项全部通过——① Bearer challenge ② token（pull,push）③ blob
+    HEAD 404→200 ④ POST uploads/ → PUT ?digest → 201 ⑤ OCI manifest PUT
+    Content-Type ⑥ tag pull Content-Type + Docker-Content-Digest == bytes
+    ⑦ digest pull 与 tag 一致 ⑧ DSH contentHash + Signature VALID + Trust
+    VERIFIED + run configHash 一致。
+  - **Release Gate PASS → v0.4.2 允许 merge/tag**（原 §10 硬 Gate 解锁）。
 
 ## [v0.4.1] - 2026-08-29
 

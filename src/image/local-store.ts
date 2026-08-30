@@ -11,7 +11,7 @@ import {
   existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { sha256Hex } from '../canonical.ts'
+import { canonicalJson, sha256Hex } from '../canonical.ts'
 import type { DshContentDigest } from './digests.ts'
 import { DIGEST_RE } from './reference.ts'
 import { imageManifestDigest, validateImageManifest, type ImageManifest } from './manifest.ts'
@@ -91,7 +91,17 @@ export class LocalImageStore implements ImageStore {
     const target = this.manifestPath(digest)
     const serialized = `${JSON.stringify(manifest, null, 2)}\n`
     if (existsSync(target)) {
-      if (readFileSync(target, 'utf8') === serialized) return // idempotent re-import
+      // Idempotency is SEMANTIC: the same digest + same content must succeed
+      // regardless of JSON key order in the stored file (canonicalJson sorts
+      // keys — an import-built manifest and a pull-parsed one serialize
+      // differently but carry identical content).
+      let existing: unknown
+      try {
+        existing = JSON.parse(readFileSync(target, 'utf8'))
+      } catch {
+        throw new Error(`manifest ${digest} already exists with different content`)
+      }
+      if (canonicalJson(existing) === canonicalJson(manifest)) return // idempotent re-import
       throw new Error(`manifest ${digest} already exists with different content`)
     }
     atomicWrite(target, serialized)
@@ -154,4 +164,32 @@ export class LocalImageStore implements ImageStore {
     walk(this.refsDir, '')
     return out.sort((a, b) => `${a.repo}:${a.tag}`.localeCompare(`${b.repo}:${b.tag}`))
   }
+
+  // ---- local GC enumeration (DESIGN-v0.4.2.md §12, D57–D63) ----
+
+  async listManifestDigests(): Promise<string[]> {
+    // full digests with the sha256: prefix — consistent with refs / the
+    // marked-set keys in prune's mark phase (bare hex would never match)
+    return listDigestFiles(this.manifestsDir).map((hex) => `sha256:${hex}`)
+  }
+
+  async listBlobDigests(): Promise<DshContentDigest[]> {
+    return listDigestFiles(this.blobsDir).map((hex) => `sha256:${hex}` as DshContentDigest)
+  }
+
+  async getManifestSize(digest: string): Promise<number | undefined> {
+    const target = this.manifestPath(digest)
+    return existsSync(target) ? statSync(target).size : undefined
+  }
+
+  async getBlobSize(digest: DshContentDigest): Promise<number | undefined> {
+    const target = this.blobPath(digest)
+    return existsSync(target) ? statSync(target).size : undefined
+  }
+}
+
+/** Content-address filenames are exactly 64 lowercase hex (no traversal). */
+function listDigestFiles(dir: string): string[] {
+  if (!existsSync(dir)) return []
+  return readdirSync(dir).filter((name) => /^[0-9a-f]{64}$/.test(name))
 }

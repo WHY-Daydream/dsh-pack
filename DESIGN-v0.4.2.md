@@ -546,10 +546,20 @@ run #2：BLOCKED — CI 只 checkout dsh-pack，devDependencies 通过
         47f943859b，pin release dsh@0.1.0-rc.5）+ working-directory=dsh-pack
         + dependency preflight + build:lib:host（lib/ 被 harness .gitignore
         忽略，checkout 后无构建产物）。
+run #3：PARTIAL — 真实 GHCR 协议已开始：① GET /v2/ → 401 + Bearer
+        challenge ✅、② Bearer token 获取（scope pull,push）✅；③ 之前
+        push 前的客户端 ImageReference 校验拦截：fixture 用了 GitHub
+        owner 原始大小写（ghcr.io/WHY-Daydream/dsh-pack-e2e），而 OCI
+        repository <name> 只允许小写 [a-z0-9...] → Parser 正确拒绝
+        （invalid namespace component）。不是 GHCR 拒绝请求——GHCR 根本
+        没收到 push。修复：scripts/ghcr-fixture.mjs 将 owner 映射为
+        canonical lowercase repository（why-daydream/dsh-pack-e2e），
+        target ref / registry URL / Bearer scope 共用同一字符串；通用
+        Parser 不放宽（回归测试钉死）。⑥⑦⑧ 及其余项 NOT RUN。
 
-两轮均标注 BLOCKED（CI environment parity failure / NOT RUN），
-不是 8 项协议 FAIL——8 项 GHCR 断言一条都未执行。修复后重新
-workflow_dispatch 才是真正开始验证 GHCR。
+前两轮 BLOCKED（CI environment parity failure / NOT RUN）；run #3 为
+PARTIAL（2 项真实 PASS，push 未进入）——均不是 8 项协议 FAIL。修复后
+重新 workflow_dispatch 才进入真实 Registry push/pull 核心阶段。
 ```
 
 **完成 prune 后不再新增 v0.4.2 功能。**

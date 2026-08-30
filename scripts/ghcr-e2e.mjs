@@ -26,6 +26,7 @@ import { LocalImageStore } from '../lib/image/local-store.js'
 import { RegistryClient } from '../lib/image/registry/client.js'
 import { DefaultImageService } from '../lib/image/service.js'
 import { DefaultPackager } from '../lib/service.js'
+import { buildGhcrRepository } from './ghcr-fixture.mjs'
 
 const execFileAsync = promisify(execFile)
 const DSH_VERSION = '0.1.0-rc.5'
@@ -38,8 +39,14 @@ const REGISTRY_USERNAME = process.env['DSH_REGISTRY_USERNAME']
 const REGISTRY_TOKEN = process.env['DSH_REGISTRY_TOKEN']
 
 const REPO = 'dsh-pack-e2e'
-const REMOTE_REF = `ghcr.io/${GHCR_OWNER}/${REPO}:run-${RUN_ID}`
-const SCOPE = `repository:${GHCR_OWNER}/${REPO}:pull,push`
+// OCI Distribution Spec: repository <name> must be lowercase [a-z0-9...].
+// GitHub account/org display names (e.g. WHY-Daydream) are NOT valid OCI
+// namespace components — map the owner to a canonical lowercase repository
+// (shared fixture module: target ref / registry URL / Bearer scope all use
+// the SAME string — no uppercase ghost identity in auth scope).
+const { repository, remoteRef, scope } = buildGhcrRepository(GHCR_OWNER, REPO)
+const REMOTE_REF = remoteRef(`run-${RUN_ID}`)
+const SCOPE = scope()
 
 let passed = 0
 let failed = 0
@@ -173,14 +180,14 @@ async function main() {
     // HEAD blob now exists (200) + Docker-Content-Digest verifiable
     const probeClient = new RegistryClient({
       baseUrl: 'https://ghcr.io',
-      repo: `${GHCR_OWNER}/${REPO}`,
+      repo: repository,
       credentials: { username: REGISTRY_USERNAME, password: REGISTRY_TOKEN },
     })
     check('blob HEAD now 200 (exists)', await probeClient.blobExists(pushed.blobDigest))
 
     // ---- ⑥ tag pull: Content-Type + Docker-Content-Digest == bytes ----
     log('item 6: tag pull → Content-Type + Docker-Content-Digest match bytes')
-    const manifestProbe = await rawFetch(`https://ghcr.io/v2/${GHCR_OWNER}/${REPO}/manifests/run-${RUN_ID}`, {
+    const manifestProbe = await rawFetch(`https://ghcr.io/v2/${repository}/manifests/run-${RUN_ID}`, {
       headers: { Accept: OCI_MANIFEST_MEDIA_TYPE, Authorization: `Bearer ${bearerToken}` },
     })
     check('manifest GET 200', manifestProbe.status === 200, `status ${manifestProbe.status}`)
@@ -205,7 +212,7 @@ async function main() {
 
     // ---- ⑦ digest pull on another fresh machine (immutable) ----
     log('item 7 (digest form): pull @manifestDigest on a fresh machine')
-    const digestRef = `ghcr.io/${GHCR_OWNER}/${REPO}@${pushed.ociManifestDigest}`
+    const digestRef = `ghcr.io/${repository}@${pushed.ociManifestDigest}`
     const { images: imagesC } = makeImageEnv(join(root, 'machine-c'))
     const byDigest = await imagesC.pull(digestRef)
     check('digest pull yields the same contentHash as tag pull', byDigest.contentHash === pulled.contentHash)

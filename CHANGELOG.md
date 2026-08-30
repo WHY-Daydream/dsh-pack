@@ -117,11 +117,20 @@ image lock / trust.yaml / prune（跑通真实 GHCR 后再做，顺序见 DESIGN
 ### 验收状态
 
 - 本地验证：`node --check` 语法 OK；lib 导入路径全部存在；本地测试套件
-  **129 全绿**（19 文件，+6 lock +20 trust 测试）。
+  **138 全绿**（20 文件，+6 lock +20 trust +9 prune +2 fixture 测试）。
 - **真实 GHCR 运行须在 GitHub Actions `workflow_dispatch` 执行**（需
   `GITHUB_TOKEN` + `packages: write`，此环境无凭据不可本地运行真协议）——
-  **Release Gate（§10）：GHCR 8/8 + image lock E2E 全过后才允许 v0.4.2
-  merge/tag；当前状态 PENDING（待回填）**。
+  **Release Gate（§10）：GHCR 8/8 全过后才允许 v0.4.2 merge/tag**。
+  GHCR Gate 现场记录（2026-08-30，详见 DESIGN §13）：
+  - run #1 BLOCKED（pnpm 未入 PATH → pnpm/action-setup 修复）
+  - run #2 BLOCKED（CI 缺 deepseek-harness sibling → 双 checkout + pin +
+    build:lib:host 修复）
+  - run #3 **PARTIAL**：① GET /v2/ → 401 + Bearer challenge ✅、② Bearer
+    token 获取 ✅；push 前客户端 ImageReference 校验拦截 uppercase
+    namespace（fixture 用 `WHY-Daydream`，OCI 只允许小写）——GHCR 未收到
+    push，⑥⑦⑧ 及其余项 NOT RUN。修复：`scripts/ghcr-fixture.mjs`
+    canonical lowercase（`why-daydream/dsh-pack-e2e`），target/URL/scope
+    共用同一字符串；Parser 不放宽（回归测试钉死）。
 
 ## [v0.4.1] - 2026-08-29
 

@@ -52,6 +52,11 @@ describe('parseReference (D21/D22 grammar)', () => {
     expect(() => parseReference('Agent')).toThrow(/name/)
     expect(() => parseReference('agent:bad tag!')).toThrow(/tag/)
     expect(() => parseReference('agent@sha256:' + 'A'.repeat(64))).toThrow(/digest/)
+    // OCI namespace <name> must be lowercase — a GitHub display name like
+    // WHY-Daydream is NOT a valid repository component (GHCR E2E regression,
+    // 2026-08-30: fixture must canonicalize to why-daydream, parser must not
+    // relax to accept the uppercase form).
+    expect(() => parseReference('ghcr.io/WHY-Daydream/foo:v1')).toThrow(/namespace component/)
   })
 
   it('rejects every malicious/boundary form — never guess (invariant 7)', () => {

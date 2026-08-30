@@ -38,4 +38,13 @@ export interface ImageStore {
 
   /** All tag refs, for `image ls`. */
   listRefs(): Promise<ImageRefEntry[]>
+
+  /** All stored manifest digests, for local GC (DESIGN-v0.4.2.md D57–D63). */
+  listManifestDigests(): Promise<string[]>
+  /** All stored blob digests (contentHash), for local GC. */
+  listBlobDigests(): Promise<DshContentDigest[]>
+  /** Stored size in bytes of a manifest (undefined when absent). */
+  getManifestSize(digest: string): Promise<number | undefined>
+  /** Stored size in bytes of a blob (undefined when absent). */
+  getBlobSize(digest: DshContentDigest): Promise<number | undefined>
 }

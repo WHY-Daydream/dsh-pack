@@ -7,8 +7,9 @@
 
 - **v0.4.2 剩余**：image lock（`/pack image lock <ref>` → 真实 manifestDigest +
   dsh-lock.json）；trust.yaml（registries 级 requireSignature/requireTrusted/
-  trustedKeys）；local image prune（未引用 blob/manifest + 旧 runtime cache；
-  不做 Registry GC——那是 Registry Server 的职责）。
+  trustedKeys）；local image prune（mark-and-sweep reachability GC：
+  只删不可达 manifest/blob，默认 dry-run、`--apply` 才删除；runtime cache
+  保守报告不删除（D62）；不做 Registry GC——那是 Registry Server 的职责）。
 - **v0.5 规划**：Encryption（私密插件源码 / 企业离线分发场景才需要）。
   Signing 已知边界（吊销 / 轮换 / 多签名 / 过期）同列后续。
 

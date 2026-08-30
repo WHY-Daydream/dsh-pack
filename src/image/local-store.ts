@@ -164,4 +164,32 @@ export class LocalImageStore implements ImageStore {
     walk(this.refsDir, '')
     return out.sort((a, b) => `${a.repo}:${a.tag}`.localeCompare(`${b.repo}:${b.tag}`))
   }
+
+  // ---- local GC enumeration (DESIGN-v0.4.2.md §12, D57–D63) ----
+
+  async listManifestDigests(): Promise<string[]> {
+    // full digests with the sha256: prefix — consistent with refs / the
+    // marked-set keys in prune's mark phase (bare hex would never match)
+    return listDigestFiles(this.manifestsDir).map((hex) => `sha256:${hex}`)
+  }
+
+  async listBlobDigests(): Promise<DshContentDigest[]> {
+    return listDigestFiles(this.blobsDir).map((hex) => `sha256:${hex}` as DshContentDigest)
+  }
+
+  async getManifestSize(digest: string): Promise<number | undefined> {
+    const target = this.manifestPath(digest)
+    return existsSync(target) ? statSync(target).size : undefined
+  }
+
+  async getBlobSize(digest: DshContentDigest): Promise<number | undefined> {
+    const target = this.blobPath(digest)
+    return existsSync(target) ? statSync(target).size : undefined
+  }
+}
+
+/** Content-address filenames are exactly 64 lowercase hex (no traversal). */
+function listDigestFiles(dir: string): string[] {
+  if (!existsSync(dir)) return []
+  return readdirSync(dir).filter((name) => /^[0-9a-f]{64}$/.test(name))
 }

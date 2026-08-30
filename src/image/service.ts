@@ -12,7 +12,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { installPack } from '../install.ts'
 import { validateManifest } from '../manifest.ts'
@@ -29,7 +29,7 @@ import { RegistryClient } from './registry/client.ts'
 import { pullImage, type PullResult } from './registry/pull.ts'
 import { pushImage, type PushResult } from './registry/push.ts'
 import { parseRemoteReference, registryBaseUrl, repoPath } from './registry/reference.ts'
-import type { OciManifestDigest } from './digests.ts'
+import type { DshContentDigest, OciManifestDigest } from './digests.ts'
 import { DEFAULT_LOCKFILE, addLockEntry, loadLockfile, saveLockfile } from './lockfile.ts'
 import {
   loadTrustPolicy, mergeCliTightening, resolveTrustPolicy, type TrustPolicyDecision,
@@ -87,6 +87,36 @@ export interface LockResult {
   resolved: string
   manifestDigest: OciManifestDigest
   file: string
+}
+
+export interface PruneEntry {
+  digest: string
+  bytes: number
+}
+
+export interface RuntimeCacheEntry {
+  profile: string
+  bytes: number
+}
+
+export interface PruneResult {
+  reachableManifests: number
+  reachableBlobs: number
+  orphanManifests: PruneEntry[]
+  orphanBlobs: PruneEntry[]
+  runtimeCache: RuntimeCacheEntry[]
+  reclaimableBytes: number
+  applied: boolean
+}
+
+/** Recursive directory size in bytes (for the prune runtime report, D62). */
+function dirBytes(dir: string): number {
+  let total = 0
+  for (const name of readdirSync(dir)) {
+    const absolute = join(dir, name)
+    total += statSync(absolute).isDirectory() ? dirBytes(absolute) : statSync(absolute).size
+  }
+  return total
 }
 
 /** v0.4 default in-process image service (LocalImageStore backend). */
@@ -242,6 +272,63 @@ export class DefaultImageService {
     const lockfile = addLockEntry(loadLockfile(file), remoteRefStr, digest, resolved)
     saveLockfile(file, lockfile)
     return { mutableRef: remoteRefStr, resolved, manifestDigest: digest, file }
+  }
+
+  /**
+   * Local CAS garbage collection (DESIGN-v0.4.2.md §12, D57–D63): mark-and-
+   * sweep reachability over refs → manifests → artifact blobs. Only
+   * UNREACHABLE objects are removed (D58); a blob reachable through ANY
+   * manifest/ref is kept (D60). Default dry-run (D61); `--apply` performs the
+   * destructive sweep. Runtime cache is REPORT-ONLY (D62 — no active-runtime
+   * marker exists yet, conservative). dsh-lock.json / trust.yaml are NOT GC
+   * roots (D63).
+   */
+  async prune(options?: { apply?: boolean }): Promise<PruneResult> {
+    // Phase 1 — Mark (D59/D60): refs → manifest → artifact blob
+    const reachableManifests = new Set<string>()
+    const reachableBlobs = new Set<string>()
+    for (const ref of await this.store.listRefs()) {
+      reachableManifests.add(ref.manifestDigest)
+      const manifest = await this.store.getManifest(ref.manifestDigest)
+      if (manifest !== undefined) reachableBlobs.add(manifest.artifact.digest)
+    }
+
+    // Phase 2 — Sweep (compute; delete only with --apply)
+    const orphanManifests: PruneEntry[] = []
+    for (const digest of await this.store.listManifestDigests()) {
+      if (reachableManifests.has(digest)) continue
+      orphanManifests.push({ digest, bytes: (await this.store.getManifestSize(digest)) ?? 0 })
+    }
+    const orphanBlobs: PruneEntry[] = []
+    for (const digest of await this.store.listBlobDigests()) {
+      if (reachableBlobs.has(digest)) continue
+      orphanBlobs.push({ digest, bytes: (await this.store.getBlobSize(digest)) ?? 0 })
+    }
+
+    // Runtime cache — conservative report-only (D62)
+    const runtimeCache: RuntimeCacheEntry[] = []
+    const profilesDir = join(this.context.home, 'profiles')
+    if (existsSync(profilesDir)) {
+      for (const name of readdirSync(profilesDir)) {
+        if (!name.startsWith('.run-')) continue
+        runtimeCache.push({ profile: name, bytes: dirBytes(join(profilesDir, name)) })
+      }
+    }
+
+    const reclaimableBytes = [...orphanManifests, ...orphanBlobs].reduce((sum, e) => sum + e.bytes, 0)
+    if (options?.apply === true) {
+      for (const entry of orphanManifests) await this.store.removeManifest(entry.digest)
+      for (const entry of orphanBlobs) await this.store.removeBlob(entry.digest as DshContentDigest)
+    }
+    return {
+      reachableManifests: reachableManifests.size,
+      reachableBlobs: reachableBlobs.size,
+      orphanManifests,
+      orphanBlobs,
+      runtimeCache,
+      reclaimableBytes,
+      applied: options?.apply === true,
+    }
   }
 
   /** Ensure a remote ref's image is local: pull when missing (cache-only policy). */

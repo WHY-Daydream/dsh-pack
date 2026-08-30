@@ -422,7 +422,124 @@ trust.yaml: prod 规则 requireTrusted（A 的 key 在 trustedKeys）
 
 ---
 
-*本文档 v0.4.2 第一阶段设计定稿（2026-08-29）。冻结 D41–D56；v0.4.1 的
+## 12. local image prune（冻结，D57–D63）
+
+**定位**：Local CAS Garbage Collection——**不是** `rm -rf ~/.dsh/images`。
+核心原则：**只删除"不可达"的对象，永远不根据"看起来旧"直接删除仍被引用的
+对象**。v0.4.2 最后一块功能；完成后停止新增功能，等 GHCR 8/8 Release
+Gate。
+
+### 冻结决策
+
+| ID | 决策 |
+|----|------|
+| D57 | prune 只管理 Local Image Store / runtime cache，**不操作远程 Registry**（不做 Registry GC——那是 Registry Server 的职责，延续 v0.4.2 冻结） |
+| D58 | GC 使用 **reachability**，而不是时间作为主要删除依据（ref count 会因 crash / 手工改文件漂移；reachability 每次重算是真相） |
+| D59 | 所有 refs 指向的 manifests/digests 都属于 **GC Root** |
+| D60 | manifest 可达则其 `.dshpack` blob **必须保留**（blob 可能被多个 manifest/ref 间接引用——不能因删一个 tag 就删 blob，延续 v0.4.0 F-A 不变量） |
+| D61 | **默认 dry-run**（完整列出删除计划）；破坏性删除必须显式 `--apply` |
+| D62 | runtime cache 与 Image CAS **分开清理**，运行中的 runtime 永远不能 prune——v0.4.2 无活跃 marker/pid lease → **保守策略：runtime cache 只报告（条目+字节），永不自动删除**（宁可保守；未来引入 lease 后再启用自动清理） |
+| D63 | `dsh-lock.json` 与 `trust.yaml` **都不是 Local GC Root**（lock 是 remote immutable reference，不代表本地存在；trust.yaml 是执行治理不是本地保存治理）——需要时 `pull locked digest` 重新拉回 |
+
+### 四层架构（互不混淆，冻结）
+
+```text
+Image Ref         → Local reachability / lifecycle（prune 管这层）
+Image Lock        → Version governance（D46–D49）
+trust.yaml        → Execution governance（D50–D56）
+Registry          → Distribution（不操作，D57）
+```
+
+### Mark-and-Sweep（冻结实现结构）
+
+```text
+Phase 1 — Mark：遍历 refs → 标记 manifest reachable → 读取 manifest →
+              标记 artifact blob reachable（D59/D60）
+
+Phase 2 — Sweep：all manifests − marked = orphan manifests
+                 all blobs − marked = orphan blobs
+```
+
+```ts
+const reachableManifests = new Set<string>()
+const reachableBlobs = new Set<string>()
+for (const ref of store.listTags()) {
+  const manifestDigest = store.getTag(ref)          // resolve ref (GC Root)
+  reachableManifests.add(manifestDigest)
+  const manifest = store.getManifest(manifestDigest)
+  reachableBlobs.add(manifest.artifact.digest)      // D60
+}
+const orphanManifests = store.listManifests().filter((m) => !reachableManifests.has(m))
+const orphanBlobs = store.listBlobs().filter((b) => !reachableBlobs.has(b))
+```
+
+### 命令面（冻结）
+
+```bash
+/pack image prune           # dry-run：只扫描
+/pack image prune --apply   # 真正删除
+```
+
+输出（dry-run 示例）：
+
+```text
+Local Image Prune
+
+Reachable manifests   8
+Reachable blobs       6
+
+Unreferenced manifests
+  sha256:AAA
+  sha256:BBB
+
+Unreferenced blobs
+  sha256:CCC   12.4 MB
+
+Runtime cache (conservative, not deleted)
+  3 entries
+  184 MB
+
+Reclaimable (dry-run): 196.4 MB
+```
+
+`--apply` 时输出 `Reclaimed: <bytes>`（扫描阶段记录每个对象大小）。
+
+### 验收判据（冻结）
+
+```text
+T0 无 orphan → prune 0 items
+T1 删除唯一 tag 后 manifest + blob 成为 unreachable → prune 删除
+T2 两个 tag 指向同 digest，删其中一个 → manifest/blob 保留
+T3 两个 manifests 共用同 blob，其中一个 orphan → manifest 删，blob 保留（D60）
+T4 orphan manifest 指向 orphan blob → 两者一起删除
+T5 dry-run → 结果正确，但磁盘完全不改变（D61）
+T6 prune 中途失败 → refs 永不损坏 → 可再次安全执行（二次 --apply 幂等 no-op）
+T7 .run-* 存在（active/unknown）→ 永不删除（D62 保守）
+T8 runtime cache 报告正确（条目+字节）+ D63：locked 但本地无 ref 的 image → prune 删除
+```
+
+---
+
+## 13. v0.4.2 路线收口（冻结）
+
+```text
+image lock       ✅
+trust.yaml       ✅
+local prune      NEXT
+GHCR 8/8         PENDING（硬 Release Gate）
+        ↓
+Local prune PASS
+        ↓
+真实 GHCR workflow_dispatch → 8/8 PASS
+        ↓
+CHANGELOG 回填 → Release Review → --no-ff merge → annotated v0.4.2
+```
+
+**完成 prune 后不再新增 v0.4.2 功能。**
+
+---
+
+*本文档 v0.4.2 设计定稿（2026-08-29）。冻结 D41–D63；v0.4.1 的
 D32–D40 与 `.dshpack` v1 协议不受影响。实现顺序：DESIGN 冻结（本文）→
 PR CI workflow → GHCR E2E workflow → `scripts/ghcr-e2e.mjs`（8 项断言）→
 本地验证脚本语法 → CHANGELOG。真实 GHCR 运行须在 GitHub Actions

@@ -87,37 +87,12 @@ v0.4.2 Governed      — image lock + trust.yaml + local prune + Real GHCR 8/8 P
 
 ## Architecture — Artifact Supply Chain
 
-```mermaid
-flowchart LR
-    P["DSH Profile"] --> PACK["/pack"]
+<p align="center">
+  <img src="./docs/assets/dsh-pack-architecture.svg"
+       alt="dsh-pack Artifact Supply Chain Architecture" width="100%" max-width="880px" />
+</p>
 
-    PACK --> A[".dshpack Artifact"]
-
-    A --> CH["configHash<br/>Reproducibility"]
-    A --> DH["contentHash<br/>DSH Identity"]
-
-    A --> SIGN["Ed25519 Sign"]
-    SIGN --> SA["Signed Artifact"]
-
-    SA --> IMG["Image Import"]
-    IMG --> LS["Local Image Store<br/>Content Addressed"]
-
-    LS --> PUSH["OCI Push"]
-    PUSH --> REG["OCI Registry / GHCR"]
-
-    REG --> LOCK["dsh-lock.json<br/>Version Governance"]
-    REG --> PULL["OCI Pull"]
-
-    PULL --> VERIFY["OCI Integrity<br/>↓<br/>DSH Integrity<br/>↓<br/>Signature<br/>↓<br/>Trust"]
-
-    LOCK --> VERIFY
-    TP["trust.yaml<br/>Execution Governance"] --> VERIFY
-
-    VERIFY --> RUN["Runnable Agent Image"]
-    RUN --> RT["Temporary Runtime"]
-
-    LS --> GC["Mark-and-Sweep Prune<br/>Local Lifecycle"]
-```
+> 可编辑 Mermaid 源图见 [`docs/architecture.md`](docs/architecture.md)（README 默认展示 SVG 以便跨平台渲染一致）。
 
 ### Identity Model — Four Layers
 

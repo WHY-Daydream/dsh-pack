@@ -480,6 +480,24 @@ export class DefaultPackager implements PackagerService {
   }
 
   async install(file: string, opts: InstallOptions): Promise<InstallResult> {
+    // D115 (rc.1): lifecycle/package execution must NEVER happen before the
+    // trust decision. When a policy gate is requested, evaluate the FULL v2
+    // policy FIRST and refuse to materialize on any non-ALLOW verdict —
+    // installPack runs `pnpm install`, which would execute the profile's
+    // preinstall/install/postinstall/prepare scripts.
+    if (opts.policy !== undefined) {
+      const evaluation = await this.policy(file, {
+        ...(opts.policy.repository !== undefined ? { repository: opts.policy.repository } : {}),
+        ...(opts.policy.collectionDir !== undefined ? { collectionDir: opts.policy.collectionDir } : {}),
+        ...(opts.policy.executionTarget !== undefined ? { executionTarget: opts.policy.executionTarget } : {}),
+      })
+      if (evaluation.verdict.decision !== 'ALLOW') {
+        throw new Error(
+          `dsh-pack: install blocked by trust policy before materialization (${evaluation.verdict.decision}): `
+          + evaluation.verdict.errors.join('; '),
+        )
+      }
+    }
     const buffer = readFileSync(file)
     const { result, staging } = await installPack(buffer, opts, {
       home: this.home(),

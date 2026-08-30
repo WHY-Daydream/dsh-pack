@@ -36,6 +36,22 @@ export interface InstallOptions {
   force?: boolean
   /** Skip the exact dshVersion match (D15). */
   ignoreRuntimeVersion?: boolean
+  /**
+   * D115 (rc.1): optional trust-policy gate evaluated BEFORE materialization.
+   * When provided, `install` runs the full v2 policy evaluation first and
+   * refuses to materialize (and therefore refuses to run any package
+   * lifecycle script) unless the verdict is ALLOW. Absent → v0.1 semantics
+   * (no policy gate), preserving backward compatibility for explicit local
+   * installs outside a trust context.
+   */
+  policy?: {
+    /** The repository the trust.yaml rule is resolved for (provenance source by default). */
+    repository?: string
+    /** Evidence collection root (default: `<file>.dshpack.evidence` next to the pack). */
+    collectionDir?: string
+    /** D111: the current execution target (default: process.platform/process.arch). */
+    executionTarget?: { os: string; arch: string }
+  }
 }
 
 /** Result of a successful pack. */

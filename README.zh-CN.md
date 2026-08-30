@@ -67,6 +67,25 @@ GHCR / OCI Registry
 Governed Runtime
 ```
 
+## Demo
+
+可复现的终端录制，覆盖完整链路（pack → sign → import → lock → verify → run）：
+
+```text
+contentHash: sha256:...
+
+Signature: VALID
+Trust: VERIFIED
+
+demo/agent:prod
+→ ghcr.io/.../agent@sha256:<manifestDigest>
+
+Agent image started
+```
+
+- 录制脚本：`demo/recording/demo.sh`（`DEMO_MODE=local` 默认；`DEMO_MODE=ghcr` 展示真实 push/lock）
+- 确定性录制：`demo/recording/demo.tape`（VHS）
+
 ---
 
 ## 版本演进

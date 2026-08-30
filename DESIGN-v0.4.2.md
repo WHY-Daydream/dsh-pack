@@ -525,14 +525,31 @@ T8 runtime cache 报告正确（条目+字节）+ D63：locked 但本地无 ref 
 ```text
 image lock       ✅
 trust.yaml       ✅
-local prune      NEXT
-GHCR 8/8         PENDING（硬 Release Gate）
-        ↓
-Local prune PASS
+local prune      ✅
+GHCR 8/8         ⏳（硬 Release Gate）
         ↓
 真实 GHCR workflow_dispatch → 8/8 PASS
         ↓
 CHANGELOG 回填 → Release Review → --no-ff merge → annotated v0.4.2
+```
+
+**GHCR Gate 状态记录（2026-08-30，两次 workflow_dispatch 前置失败）**：
+
+```text
+run #1：BLOCKED — setup-node cache 阶段找不到 pnpm（corepack enable 在
+        setup-node 之后才运行，且 package.json 无 packageManager 字段）。
+        修复：pnpm/action-setup@v4（version 11）置于 setup-node 之前。
+run #2：BLOCKED — CI 只 checkout dsh-pack，devDependencies 通过
+        link:../deepseek-harness/<pkg> 依赖 sibling DeepSeek Harness 源码树，
+        runner 上 ../deepseek-harness 不存在 → tsc 无法 resolve @deepseek-ai/*。
+        修复：双 checkout（dsh-pack + deepseek-ai/deepseek-harness@
+        47f943859b，pin release dsh@0.1.0-rc.5）+ working-directory=dsh-pack
+        + dependency preflight + build:lib:host（lib/ 被 harness .gitignore
+        忽略，checkout 后无构建产物）。
+
+两轮均标注 BLOCKED（CI environment parity failure / NOT RUN），
+不是 8 项协议 FAIL——8 项 GHCR 断言一条都未执行。修复后重新
+workflow_dispatch 才是真正开始验证 GHCR。
 ```
 
 **完成 prune 后不再新增 v0.4.2 功能。**

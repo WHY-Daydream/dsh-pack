@@ -1,7 +1,12 @@
 # 普通 PR CI（DESIGN-v0.4.2.md §4A）：不碰真实 GHCR。
 # 覆盖：typecheck / 本地测试套件（含 mock OCI registry）/ signing CLI E2E。
 # 真实 GHCR 协议验收单独走 ghcr-e2e.yml（workflow_dispatch，D41/D43）。
-# 2026-08-30：注册触发 re-touch（blob 变更强制 GitHub 重新扫描 workflow 注册）。
+#
+# 环境布局（2026-08-30 修复）：dsh-pack 的 devDependencies 通过
+#   link:../deepseek-harness/<pkg>  依赖 sibling DeepSeek Harness 源码树。
+# CI 必须双 checkout（dsh-pack + deepseek-harness@<pin>）并先 build harness
+# 的 host face（lib/ 被其 .gitignore 忽略，checkout 后无构建产物）。
+# pin commit 47f943859b = 本地验证使用的 release: dsh@0.1.0-rc.5。
 name: PR CI
 
 on:
@@ -16,8 +21,22 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dsh-pack
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout dsh-pack
+        uses: actions/checkout@v4
+        with:
+          path: dsh-pack
+
+      - name: Checkout deepseek-harness (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          # pin：release dsh@0.1.0-rc.5（与本地验证一致，保证 CI 可复现）
+          ref: 47f943859bef60e4160492346772ded9b24f765a
+          path: deepseek-harness
 
       - uses: pnpm/action-setup@v4
         with:
@@ -27,14 +46,30 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: dsh-pack/pnpm-lock.yaml
 
-      - name: Install dependencies (frozen)
+      - name: DSH dependency preflight
+        run: |
+          set -e
+          echo "DSH dependency preflight"
+          test -f ../deepseek-harness/package.json && echo "OK ../deepseek-harness" || { echo "FAIL: deepseek-harness sibling checkout missing"; exit 1; }
+          for d in vendor/cordis vendor/include vendor/loader packages/boot/app-boot packages/interaction/commands packages/util/home-paths; do
+            test -d "../deepseek-harness/$d" && echo "OK $d" || { echo "FAIL: $d missing in deepseek-harness"; exit 1; }
+          done
+
+      - name: Build deepseek-harness host lib (tsc -b + tsdown)
+        working-directory: deepseek-harness
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build:lib:host
+
+      - name: Install dsh-pack dependencies (frozen)
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck + build (lib/)
         run: pnpm run typecheck
 
-      - name: Test suite (103 tests, incl. mock OCI registry)
+      - name: Test suite (138 tests, incl. mock OCI registry)
         run: pnpm test
 
       - name: Signing CLI E2E (real CLI path)

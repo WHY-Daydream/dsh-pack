@@ -1,8 +1,9 @@
 {
   "name": "@why-daydream/dsh-pack",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Portable, reproducible and verifiable runtime artifacts for DeepSeek Harness",
   "license": "MIT",
+  "packageManager": "pnpm@11.24.0",
 
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",

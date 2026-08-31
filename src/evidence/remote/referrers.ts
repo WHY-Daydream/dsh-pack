@@ -144,9 +144,35 @@ async function collectReferrersPages(
   const descriptors: ReferrerDescriptor[] = []
   if (first.body !== undefined) descriptors.push(...descriptorsFromIndex(first.body))
 
+  // rc.1 (D193) — pagination is a TRUST BOUNDARY: the enumeration is only
+  // complete when every page was consumed from the SAME registry origin and
+  // the link chain terminates. A cross-origin or looping `Link rel=next` is
+  // NEVER followed — both fail closed as DISCOVERY_INCOMPLETE.
+  const firstOrigin = new URL(firstUrl).origin
+  const visited = new Set<string>([firstUrl])
+
   let next = nextPageUrl(first.headers['link'])
   while (next !== undefined) {
-    const resolved = new URL(next, firstUrl)
+    let resolved: URL
+    try {
+      resolved = new URL(next, firstUrl)
+    } catch {
+      throw { kind: 'DISCOVERY_INCOMPLETE', message: `invalid referrers next link ${JSON.stringify(next)} (D193)` } as RemoteEvidenceDiscoveryError
+    }
+    // D193 — a next link pointing OUTSIDE the registry origin is rejected
+    // WITHOUT a request: following it would (a) leak the registry credentials
+    // to an arbitrary host and (b) let a foreign enumeration smuggle itself
+    // into this repository's Evidence Set (D191/D197).
+    if (resolved.origin !== firstOrigin) {
+      throw { kind: 'DISCOVERY_INCOMPLETE', message: `referrers page ${resolved} is outside the registry origin ${firstOrigin} (cross-origin next link rejected, D193)` } as RemoteEvidenceDiscoveryError
+    }
+    // D193 — a pagination loop (next pointing back to an already-consumed
+    // page) must never be mistaken for completeness: fail closed instead of
+    // looping forever.
+    if (visited.has(resolved.toString())) {
+      throw { kind: 'DISCOVERY_INCOMPLETE', message: `referrers pagination loop detected at ${resolved} (D193)` } as RemoteEvidenceDiscoveryError
+    }
+    visited.add(resolved.toString())
     let page: Awaited<ReturnType<RegistryClient['requestAbsolute']>>
     try {
       page = await client.requestAbsolute('GET', resolved.toString(), {

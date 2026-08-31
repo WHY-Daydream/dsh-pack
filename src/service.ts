@@ -25,6 +25,7 @@ import { signPackFile, generateKeypair } from './sign.ts'
 import { buildReceiptPath, captureBuildRecord } from './evidence/build-record.ts'
 import { DefaultEvidenceService } from './evidence/service.ts'
 import { verifyEvidenceEnvelope, verifyEvidenceSubject } from './evidence/envelope.ts'
+import { attestationSemanticFields } from './evidence/attestation.ts'
 import { applyTrustPolicy, type TrustPolicy } from './image/trust.ts'
 import {
   evaluateTrustPolicyV2, loadTrustPolicyFile, resolveTrustPolicyV2,
@@ -444,7 +445,9 @@ export class DefaultPackager implements PackagerService {
    * against the envelope statement BEFORE its contents are trusted (D100/D99);
    * a missing/mismatched document makes the candidate UNVERIFIED (the evidence
    * is not self-consistent). The environment is read from the verified
-   * document for the D111 target binding.
+   * document for the D111 target binding. D125 semantic fields are computed by
+   * the SHARED `attestationSemanticFields` (also used by the remote discovery
+   * path — beta.1 D178: both paths can never diverge).
    */
   private attestationCandidates(collectionRoot: string, contentHash: string): AttestationCandidate[] {
     return this.scanEnvelopes(collectionRoot, 'attestation').map((envelope) => {
@@ -456,55 +459,16 @@ export class DefaultPackager implements PackagerService {
       }
       const documentFile = join(collectionRoot, 'documents', `${digestValue}.attestation.json`)
       if (!existsSync(documentFile)) return { ...base, verified: false, observed: [] }
-      const documentText = readFileSync(documentFile, 'utf8')
-      if (sha256Hex(documentText) !== digestValue) return { ...base, verified: false, observed: [] }
-      let doc: {
-        observation?: { coverage?: unknown }
-        environment?: { os?: unknown; arch?: unknown }
-        observed?: { tools?: unknown; skills?: unknown; services?: unknown; providers?: unknown }
-      }
-      try {
-        doc = JSON.parse(documentText)
-      } catch {
-        return { ...base, verified: false, observed: [] }
-      }
-      const coverage = doc.observation?.coverage
-      const envOs = typeof doc.environment?.os === 'string' ? doc.environment.os : undefined
-      const envArch = typeof doc.environment?.arch === 'string' ? doc.environment.arch : undefined
-      const stringIds = (value: unknown): string[] => Array.isArray(value)
-        ? value.filter((x): x is string => typeof x === 'string')
-        : []
-      const observed = [
-        ...stringIds(doc.observed?.tools), ...stringIds(doc.observed?.skills),
-        ...stringIds(doc.observed?.services), ...stringIds(doc.observed?.providers),
-      ]
-      // D125: semantic identity = normalized resultDigest + target + coverage.
-      // The document digest (documentKey) embeds non-deterministic run metadata
-      // (D96), so it must NOT be the equivalence anchor — two runs that observed
-      // the same facts are equivalent duplicates, not a conflict. The identity is
-      // RECOMPUTED from the document's normalized content (the frozen D96 field
-      // set), never taken from the self-declared resultDigest field — a forged
-      // declared value cannot collapse genuinely conflicting observations.
-      const NORMALIZED_FIELDS = [
-        'declaredCapabilityDigest', 'observation', 'coldBoot', 'observed',
-        'comparison', 'effects', 'cleanup', 'environment',
-      ] as const
-      const normalizedPortion: Record<string, unknown> = {}
-      for (const field of NORMALIZED_FIELDS) {
-        if (field in doc) normalizedPortion[field] = (doc as unknown as Record<string, unknown>)[field]
-      }
-      const normalizedDigest = `sha256:${sha256Hex(canonicalJson(normalizedPortion))}`
-      const semanticKey = (
-        envOs !== undefined && envArch !== undefined
-        && (coverage === 'complete' || coverage === 'partial' || coverage === 'unknown')
-      ) ? `${normalizedDigest}|${envOs}|${envArch}|${coverage}` : undefined
+      const documentBytes = readFileSync(documentFile)
+      if (sha256Hex(documentBytes.toString('utf8')) !== digestValue) return { ...base, verified: false, observed: [] }
+      const semantics = attestationSemanticFields(documentBytes)
       return {
         ...base,
         documentKey: digestValue,
-        ...(semanticKey !== undefined ? { semanticKey } : {}),
-        ...(coverage === 'complete' || coverage === 'partial' || coverage === 'unknown' ? { coverage } : {}),
-        ...(envOs !== undefined && envArch !== undefined ? { environment: { os: envOs, arch: envArch } } : {}),
-        observed,
+        ...(semantics.semanticKey !== undefined ? { semanticKey: semantics.semanticKey } : {}),
+        ...(semantics.coverage !== undefined ? { coverage: semantics.coverage } : {}),
+        ...(semantics.environment !== undefined ? { environment: semantics.environment } : {}),
+        observed: semantics.observed,
       }
     })
   }

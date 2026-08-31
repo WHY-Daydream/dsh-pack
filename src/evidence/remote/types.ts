@@ -242,6 +242,8 @@ export interface EvidenceCacheStats {
  * `complete: true` results are exactly the alpha.1 candidates — the cache
  * never adds, drops or reorders candidates; `source` says where the
  * enumeration came from (fresh remote vs explicit offline snapshot reuse).
+ * `mode` is the enumeration path (native API vs referrers-tag fallback) —
+ * audit/transport metadata ONLY (D179), never a trust input.
  */
 export type RemoteEvidenceDiscoveryResultCached =
   | {
@@ -250,6 +252,8 @@ export type RemoteEvidenceDiscoveryResultCached =
       rejected: RejectedRemoteEvidence[]
       /** Where the enumeration was sourced (D169/D174). */
       source: 'remote' | 'cached-snapshot'
+      /** The enumeration path that produced the descriptors (D179 — metadata only). */
+      mode: 'referrers-api' | 'tag-fallback'
       cache: EvidenceCacheStats
     }
   | {

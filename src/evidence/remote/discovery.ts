@@ -195,7 +195,7 @@ export async function discoverRemoteEvidenceCached(
     stats.snapshotStored = true
   }
 
-  return { complete: true, candidates, rejected, source: 'remote', cache: stats }
+  return { complete: true, candidates, rejected, source: 'remote', mode: enumeration.source, cache: stats }
 }
 
 /** Map an offline failure into the (frozen) discovery error union for the cache-free entry. */
@@ -267,7 +267,7 @@ async function offlineReconstruct(
     }
   }
 
-  return { complete: true, candidates, rejected, source: 'cached-snapshot', cache: stats }
+  return { complete: true, candidates, rejected, source: 'cached-snapshot', mode: snapshot.source, cache: stats }
 }
 
 type ReferrerOutcome =

@@ -130,12 +130,12 @@ async function main() {
     // ---- R8a ★ tag drift: lock M by digest, then re-point the mutable tag ----
     log('R8a ★: mutable tag drift never rewrites the resolved immutable M (D197/N1)')
     const digestRef = REMOTE_REF.split(':')[0] + `@${mDigest}` // digest-pinned reference
-    const drifted = Buffer.from(JSON.stringify(buildOciManifest(
-      { mediaType: 'application/vnd.dsh.image.manifest.v1+json', digest: configDigest, size: configBytes.length },
-      { mediaType: 'application/vnd.dsh.pack.v1+gzip', digest: contentHash, size: artifactBytes.length },
-    )), 'utf8').equals(subjectManifest)
-      ? Buffer.from('{"drifted":true}')
-      : driftedPlaceholder()
+    // a DIFFERENT, VALID OCI manifest (empty config/layers). The previous
+    // equals(subjectManifest) guard was ALWAYS true (identical build args →
+    // identical bytes), so the mutable tag received the illegal
+    // {"drifted":true} body and GHCR rejected the PUT with 500. The placeholder
+    // is a legal manifest that differs from M by construction.
+    const drifted = driftedPlaceholder()
     // push the drifted manifest under the SAME mutable tag (tag → M2)
     const driftDigest = sha256(drifted)
     await client.uploadBlob(OCI_EMPTY_BLOB_DIGEST, OCI_EMPTY_BLOB)

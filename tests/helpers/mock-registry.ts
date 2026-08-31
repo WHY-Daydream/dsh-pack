@@ -20,6 +20,12 @@ export interface MockRegistryTamper {
   configContentHash?: string
   /** Serve ANOTHER manifest's bytes under this digest (malicious registry). */
   manifestSwap?: { forDigest: string; serveTag: string }
+  /** Force the FIRST `GET referrers` response status (e.g. 404/401/403/500). */
+  referrersStatus?: number
+  /** Force paginated (page 2+) referrers responses to this status. */
+  referrersPageStatus?: number
+  /** Respond with `OCI-Filters-Applied: artifactType` on the first page (D152 note). */
+  referrersFiltersApplied?: boolean
 }
 
 export interface MockRegistryOptions {
@@ -33,9 +39,21 @@ interface ManifestEntry {
   digest: string
 }
 
+/** A referrer descriptor entry (untrusted enumeration metadata, D152). */
+export interface MockReferrerEntry {
+  digest: string
+  size: number
+  artifactType?: string
+  annotations?: Record<string, string>
+}
+
 export class MockRegistry {
   readonly blobs = new Map<string, Buffer>()
   readonly manifests = new Map<string, ManifestEntry>()
+  /** Referrers index: subjectDigest → descriptors (publication order). */
+  readonly referrers = new Map<string, MockReferrerEntry[]>()
+  /** > 0 → paginate referrers responses with `Link rel=next` (D158 tests). */
+  referrersPageSize = 0
   tamper: MockRegistryTamper
   private readonly server: Server
   port = 0
@@ -46,6 +64,11 @@ export class MockRegistry {
     this.server = createServer((req, res) => {
       void this.handle(req, res, options.requireAuth === true)
     })
+  }
+
+  /** Register the referrers descriptors for a subject digest. */
+  setReferrers(subjectDigest: string, entries: MockReferrerEntry[]): void {
+    this.referrers.set(subjectDigest, entries)
   }
 
   async start(): Promise<void> {
@@ -106,6 +129,48 @@ export class MockRegistry {
       res.setHeader('Content-Length', String(served.length))
       res.setHeader('Docker-Content-Digest', digest)
       res.end(served)
+      return
+    }
+
+    const referrersMatch = path.match(/^\/v2\/(.+?)\/referrers\/(.+)$/)
+    if (referrersMatch !== null && req.method === 'GET') {
+      const repoPathMatch = referrersMatch[1] as string
+      const subjectDigest = decodeURIComponent(referrersMatch[2] as string)
+      // pagination marker: the mock's own Link URLs carry `last=`; an
+      // `artifactType` filter param alone is NOT a page-2 request
+      const isNextPage = url.searchParams.has('last')
+      if (isNextPage && this.tamper.referrersPageStatus !== undefined) {
+        res.statusCode = this.tamper.referrersPageStatus
+        res.end('{}')
+        return
+      }
+      if (!isNextPage && this.tamper.referrersStatus !== undefined) {
+        res.statusCode = this.tamper.referrersStatus
+        res.end('{}')
+        return
+      }
+      const entries = this.referrers.get(subjectDigest) ?? []
+      const pageSize = this.referrersPageSize > 0 ? this.referrersPageSize : entries.length
+      const page = isNextPage ? entries.slice(pageSize) : entries.slice(0, pageSize)
+      const hasMore = !isNextPage && entries.length > pageSize
+      const index = {
+        schemaVersion: 2,
+        mediaType: 'application/vnd.oci.image.index.v1+json',
+        manifests: page.map((e) => ({
+          digest: e.digest,
+          size: e.size,
+          ...(e.artifactType !== undefined ? { artifactType: e.artifactType } : {}),
+          ...(e.annotations !== undefined ? { annotations: e.annotations } : {}),
+        })),
+      }
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/vnd.oci.image.index.v1+json')
+      if (!isNextPage && this.tamper.referrersFiltersApplied === true) res.setHeader('OCI-Filters-Applied', 'artifactType')
+      if (hasMore) {
+        const next = `/v2/${repoPathMatch}/referrers/${encodeURIComponent(subjectDigest)}?n=${pageSize}&last=x`
+        res.setHeader('Link', `<${next}>; rel="next"`)
+      }
+      res.end(JSON.stringify(index))
       return
     }
 

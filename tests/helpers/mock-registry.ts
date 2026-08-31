@@ -32,6 +32,10 @@ export interface MockRegistryTamper {
   ociSubjectOmit?: boolean
   /** Fail the blob upload PUT for this digest (D161 blobs-first test). */
   uploadFailDigest?: string
+  /** rc.1 (D194) — force the GET manifest status for ONE ref (fallback 5xx attacks). */
+  manifestGetStatus?: { forRef: string; status: number }
+  /** rc.1 (D197/D198) — redirect ONE path to an arbitrary location (302). */
+  redirect?: { from: string; to: string }
 }
 
 /**
@@ -71,8 +75,23 @@ export class MockRegistry {
   readonly manifests = new Map<string, ManifestEntry>()
   /** Referrers index: subjectDigest → descriptors (publication order). */
   readonly referrers = new Map<string, MockReferrerEntry[]>()
+  /**
+   * rc.1 (D192) — repository-scoped referrers: `repo|subjectDigest` → entries.
+   * A native registry indexes referrers PER REPOSITORY — the same manifest
+   * digest M in repo-A and repo-B can carry DIFFERENT Evidence sets. Lookups
+   * prefer this map and fall back to `referrers` (legacy default-repo tests).
+   */
+  readonly referrersByRepo = new Map<string, MockReferrerEntry[]>()
   /** > 0 → paginate referrers responses with `Link rel=next` (D158 tests). */
   referrersPageSize = 0
+  /** rc.1 (D194) — simulate a registry WITHOUT conditional-request support. */
+  etagEnabled = true
+  /**
+   * rc.1 (D193) — adversarial pagination hook: return the RAW `Link rel=next`
+   * URL to inject (loop / cross-origin / invalid links), or undefined for the
+   * default page-NEXT behavior. `isNextPage` is true for page-2+ requests.
+   */
+  referrersNextLink?: (isNextPage: boolean) => string | undefined
   /**
    * Test hook fired on manifest PUTs (before the conditional check) — used to
    * inject a competing fallback-tag write for the D164 concurrent-update race
@@ -97,9 +116,19 @@ export class MockRegistry {
     })
   }
 
-  /** Register the referrers descriptors for a subject digest. */
+  /** Register the referrers descriptors for a subject digest (legacy default repo). */
   setReferrers(subjectDigest: string, entries: MockReferrerEntry[]): void {
     this.referrers.set(subjectDigest, entries)
+  }
+
+  /** rc.1 (D192) — register referrers for an EXPLICIT repository (repo-scoped isolation). */
+  setReferrersForRepo(repo: string, subjectDigest: string, entries: MockReferrerEntry[]): void {
+    this.referrersByRepo.set(`${repo}|${subjectDigest}`, entries)
+  }
+
+  /** rc.1 (D192) — the referrers of ONE repository: repo-scoped index first, legacy default fallback. */
+  referrersOf(repo: string, subjectDigest: string): MockReferrerEntry[] {
+    return this.referrersByRepo.get(`${repo}|${subjectDigest}`) ?? this.referrers.get(subjectDigest) ?? []
   }
 
   async start(): Promise<void> {
@@ -124,6 +153,16 @@ export class MockRegistry {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const path = url.pathname
     this.requests.push({ method: req.method ?? '', path })
+
+    // rc.1 (D197/D198) — a redirecting registry: 302 to an ARBITRARY origin.
+    // The client must not forward Authorization across origins, and the
+    // resulting failure must stay credential-free.
+    if (this.tamper.redirect !== undefined && path === this.tamper.redirect.from) {
+      res.statusCode = 302
+      res.setHeader('Location', this.tamper.redirect.to)
+      res.end()
+      return
+    }
 
     // token endpoint for the Bearer challenge
     if (path === '/token' && req.method === 'GET') {
@@ -205,7 +244,9 @@ export class MockRegistry {
       // returns only matching referrers; a registry that ignores the query
       // returns the FULL enumeration — the client then treats it as
       // unfiltered (alpha.1 D152 note) and verifies every candidate.
-      let entries = this.referrers.get(subjectDigest) ?? []
+      // rc.1 (D192) — the enumeration is REPOSITORY-SCOPED: the same subject
+      // digest in different repositories is a different referrers index.
+      let entries = this.referrersOf(repoPathMatch, subjectDigest)
       const artifactTypeFilter = url.searchParams.get('artifactType')
       if (this.tamper.referrersFiltersApplied === true && artifactTypeFilter !== null) {
         entries = entries.filter((e) => e.artifactType === artifactTypeFilter)
@@ -226,10 +267,17 @@ export class MockRegistry {
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/vnd.oci.image.index.v1+json')
       if (!isNextPage && this.tamper.referrersFiltersApplied === true) res.setHeader('OCI-Filters-Applied', 'artifactType')
-      if (hasMore) {
-        const next = `/v2/${repoPathMatch}/referrers/${encodeURIComponent(subjectDigest)}?n=${pageSize}&last=x`
-        res.setHeader('Link', `<${next}>; rel="next"`)
+      // rc.1 (D193) — adversarial Link injection: the hook overrides the next
+      // page URL (loop / cross-origin / invalid); otherwise the default
+      // page-NEXT link applies when more pages exist.
+      let linkValue: string | undefined
+      const injected = this.referrersNextLink?.(isNextPage)
+      if (injected !== undefined) {
+        linkValue = `<${injected}>; rel="next"`
+      } else if (!isNextPage && entries.length > pageSize) {
+        linkValue = `<${`/v2/${repoPathMatch}/referrers/${encodeURIComponent(subjectDigest)}?n=${pageSize}&last=x`}>; rel="next"`
       }
+      if (linkValue !== undefined) res.setHeader('Link', linkValue)
       res.end(JSON.stringify(index))
       return
     }
@@ -298,7 +346,7 @@ export class MockRegistry {
       }
       res.statusCode = 201
       res.setHeader('Docker-Content-Digest', digest)
-      res.setHeader('ETag', `"${digest}"`)
+      if (this.etagEnabled) res.setHeader('ETag', `"${digest}"`)
       // D162 — OCI-Subject acknowledgement (a native Referrers registry echoes
       // the manifest's subject digest on PUT; tests can omit or override it)
       let subjectDigest: string | undefined
@@ -315,10 +363,13 @@ export class MockRegistry {
       // GET /referrers/<subject> (real OCI 1.1 registry behavior). The
       // fallback-only profile never maintains this index — discovery there
       // MUST go through the standard referrers tag instead.
+      // rc.1 (D192) — the index is REPOSITORY-SCOPED (repo|subjectDigest):
+      // the same digest in repo-A and repo-B has independent Evidence sets.
       if (this.profile !== 'fallback-only' && subjectDigest !== undefined) {
-        const existing = this.referrers.get(subjectDigest) ?? []
+        const repoPath = manifestMatch[1] as string
+        const existing = this.referrersByRepo.get(`${repoPath}|${subjectDigest}`) ?? []
         if (!existing.some((e) => e.digest === digest)) {
-          this.referrers.set(subjectDigest, [
+          this.referrersByRepo.set(`${repoPath}|${subjectDigest}`, [
             ...existing,
             { digest, size: bytes.length, ...(artifactType !== undefined ? { artifactType } : {}) },
           ])
@@ -345,10 +396,15 @@ export class MockRegistry {
         res.end('{}')
         return
       }
+      if (this.tamper.manifestGetStatus !== undefined && this.tamper.manifestGetStatus.forRef === ref) {
+        res.statusCode = this.tamper.manifestGetStatus.status
+        res.end('{}')
+        return
+      }
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/vnd.oci.image.manifest.v1+json')
       res.setHeader('Docker-Content-Digest', entry.digest)
-      res.setHeader('ETag', `"${entry.digest}"`)
+      if (this.etagEnabled) res.setHeader('ETag', `"${entry.digest}"`)
       res.end(entry.bytes)
       return
     }

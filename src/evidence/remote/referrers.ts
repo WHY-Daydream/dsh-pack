@@ -141,6 +141,13 @@ async function collectReferrersPages(
   firstUrl: string,
   first: Awaited<ReturnType<RegistryClient['getReferrers']>>,
 ): Promise<ReferrerDescriptor[]> {
+  // rc.1 Review (RI-21) — the FIRST page must be a valid OCI image index too:
+  // a garbage first page must not masquerade as "no referrers" (consistent
+  // with the mid-chain page check below, D158). The tag-fallback spec tolerance
+  // (D151: non-index tag ⇒ assume none) is fallback-only and unchanged.
+  if (first.body !== undefined && parseImageIndex(first.body) === undefined) {
+    throw { kind: 'DISCOVERY_INCOMPLETE', message: `referrers first page is not a valid OCI image index (${firstUrl})` } as RemoteEvidenceDiscoveryError
+  }
   const descriptors: ReferrerDescriptor[] = []
   if (first.body !== undefined) descriptors.push(...descriptorsFromIndex(first.body))
 

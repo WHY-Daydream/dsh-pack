@@ -93,6 +93,15 @@ export class RegistryClient {
   /** Bearer token fetch: GET realm?service&scope (Basic if we have creds). */
   private async fetchBearerToken(challenge: Extract<AuthChallenge, { scheme: 'bearer' }>): Promise<string | undefined> {
     const url = new URL(challenge.realm)
+    // rc.1 Review (RI-28/D198) — the realm comes from the UNTRUSTED 401
+    // challenge (D191: registry input is never trusted). It must live on the
+    // SAME origin as the registry: otherwise the Basic credentials would be
+    // shipped to an arbitrary host controlled by the challenger. A foreign
+    // realm is refused WITHOUT a request — the 401 result then stands and the
+    // caller fails closed.
+    if (url.origin !== new URL(this.options.baseUrl).origin) {
+      return undefined
+    }
     if (challenge.service !== undefined) url.searchParams.set('service', challenge.service)
     if (challenge.scope !== undefined) url.searchParams.set('scope', challenge.scope)
     const headers: Record<string, string> = {}

@@ -320,6 +320,20 @@ describe('R1: pagination attacks — no partial/looping/cross-origin enumeration
     expect(discovery.error.kind).toBe('DISCOVERY_INCOMPLETE')
     expect(discovery.error.message).toContain('invalid referrers next link')
   })
+
+  it('a GARBAGE first page (200 but not a valid OCI index) is never "no referrers" (RI-21)', async () => {
+    const ctx = await setupRedTeam()
+    await publishViaHttp(ctx, { envelopeBytes: plainEnvelope(ctx.keyFile, ctx.contentHash, 'build-provenance', 'garbage-first'), artifactType: EVIDENCE_ARTIFACT_TYPES.provenance })
+    // the native referrers API returns 200 with a NON-index body — a malicious
+    // registry hiding the enumeration as "empty"
+    ctx.mock.tamper.referrersGarbageBody = true
+
+    const discovery = await discoverRemoteEvidence({ reference: ctx.reference, actualContentHash: ctx.contentHash })
+    expect(discovery.complete).toBe(false)
+    if (discovery.complete) return
+    expect(discovery.error.kind).toBe('DISCOVERY_INCOMPLETE')
+    expect(discovery.error.message).toContain('first page is not a valid OCI image index')
+  })
 })
 
 // ============================================================================
@@ -865,6 +879,22 @@ describe('R7: auth & redirect edges — credentials never leak across origins or
     })
     expect(outputs).not.toContain('r7-super-secret')
     expect(outputs).not.toContain('r7-user')
+  })
+
+  it('a FOREIGN Bearer realm in the 401 challenge is NEVER contacted with credentials (RI-28/D198)', async () => {
+    const ctx = await setupRedTeamMock(new MockRegistry({ requireAuth: true }))
+    const credentials = { username: 'r7-user', password: 'r7-super-secret' }
+    // a malicious registry challenges with a realm on an UNRELATED origin —
+    // following it would ship the Basic credentials to evil.example
+    ctx.mock.tamper.wwwAuthenticateRealm = 'https://evil.example/token'
+
+    const discovery = await discoverRemoteEvidence({ reference: ctx.reference, actualContentHash: ctx.contentHash, credentials })
+    expect(discovery.complete).toBe(false)
+    if (discovery.complete) return
+    expect(discovery.error.kind).toBe('REGISTRY_ERROR')
+    // the failure is the ORIGINAL 401 — the client NEVER requested the foreign
+    // realm (a transport failure would mention evil.example, a leak would too)
+    expect(JSON.stringify(discovery.error)).not.toContain('evil.example')
   })
 })
 

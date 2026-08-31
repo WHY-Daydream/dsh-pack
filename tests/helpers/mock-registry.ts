@@ -36,6 +36,10 @@ export interface MockRegistryTamper {
   manifestGetStatus?: { forRef: string; status: number }
   /** rc.1 (D197/D198) — redirect ONE path to an arbitrary location (302). */
   redirect?: { from: string; to: string }
+  /** rc.1 Review (RI-21) — serve a NON-index body for the referrers FIRST page. */
+  referrersGarbageBody?: boolean
+  /** rc.1 Review (RI-28/D198) — foreign Bearer realm in the 401 challenge. */
+  wwwAuthenticateRealm?: string
 }
 
 /**
@@ -145,7 +149,10 @@ export class MockRegistry {
 
   private unauthorized(res: ServerResponse): void {
     res.statusCode = 401
-    res.setHeader('WWW-Authenticate', `Bearer realm="${this.baseUrl}/token",service="mock",scope="repository:pull,push"`)
+    // rc.1 Review (RI-28/D198) — a registry MAY challenge with a FOREIGN realm
+    // (credential-exfiltration attempt); the client must refuse it.
+    const realm = this.tamper.wwwAuthenticateRealm ?? `${this.baseUrl}/token`
+    res.setHeader('WWW-Authenticate', `Bearer realm="${realm}",service="mock",scope="repository:pull,push"`)
     res.end('{"errors":[{"code":"UNAUTHORIZED"}]}')
   }
 
@@ -267,6 +274,12 @@ export class MockRegistry {
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/vnd.oci.image.index.v1+json')
       if (!isNextPage && this.tamper.referrersFiltersApplied === true) res.setHeader('OCI-Filters-Applied', 'artifactType')
+      // rc.1 Review (RI-21) — a registry serving garbage for the FIRST page:
+      // a client must treat it as INCOMPLETE, never as "no referrers".
+      if (!isNextPage && this.tamper.referrersGarbageBody === true) {
+        res.end(JSON.stringify({ not: 'an index' }))
+        return
+      }
       // rc.1 (D193) — adversarial Link injection: the hook overrides the next
       // page URL (loop / cross-origin / invalid); otherwise the default
       // page-NEXT link applies when more pages exist.

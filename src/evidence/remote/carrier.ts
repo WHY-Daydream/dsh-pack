@@ -17,6 +17,7 @@ import type { EvidenceEnvelope } from '../../types.ts'
 import {
   EVIDENCE_DOCUMENT_LAYER_MEDIA_TYPE,
   EVIDENCE_ENVELOPE_LAYER_MEDIA_TYPE,
+  OfflineCacheGapError,
   type RemoteEvidenceDiscoveryError,
   type RemoteSubjectDescriptor,
 } from './types.ts'
@@ -83,12 +84,19 @@ export function statementDocumentDigest(envelope: EvidenceEnvelope): string | un
  *   4. OCI descriptor verification for every consumed layer (digest + size)
  *   5. DSH envelope verification + document digest verification
  * Returns `{ carrier }` or `{ error: INVALID_CARRIER }`.
+ *
+ * `fetchBlob` (optional) overrides how layer blobs are fetched — the alpha.3
+ * discovery path passes a CAS-backed fetcher (D166/D167). An
+ * OfflineCacheGapError from the fetcher is propagated (NOT converted into
+ * INVALID_CARRIER): an offline availability gap is not a carrier defect (D170).
  */
 export async function parseEvidenceCarrier(
   client: RegistryClient,
   manifestBytes: Buffer,
   expectedSubjectDigest: string,
+  fetchBlob?: (digest: string) => Promise<Buffer>,
 ): Promise<{ carrier: EvidenceCarrier } | { error: RemoteEvidenceDiscoveryError }> {
+  const doFetchBlob = fetchBlob !== undefined ? fetchBlob : (digest: string) => client.getBlob(digest)
   let parsed: unknown
   try {
     parsed = JSON.parse(manifestBytes.toString('utf8'))
@@ -143,8 +151,9 @@ export async function parseEvidenceCarrier(
   // fetch + OCI descriptor verification (digest + size)
   let envelopeBytes: Buffer
   try {
-    envelopeBytes = await client.getBlob(envelopeDescriptor.digest)
+    envelopeBytes = await doFetchBlob(envelopeDescriptor.digest)
   } catch (error) {
+    if (error instanceof OfflineCacheGapError) throw error
     return { error: invalidCarrier(`envelope blob fetch failed: ${String(error)}`) }
   }
   try {
@@ -177,8 +186,9 @@ export async function parseEvidenceCarrier(
     }
     let documentBytes: Buffer
     try {
-      documentBytes = await client.getBlob(documentDescriptor.digest)
+      documentBytes = await doFetchBlob(documentDescriptor.digest)
     } catch (error) {
+      if (error instanceof OfflineCacheGapError) throw error
       return { error: invalidCarrier(`document blob fetch failed: ${String(error)}`) }
     }
     try {

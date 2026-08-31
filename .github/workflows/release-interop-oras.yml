@@ -1,0 +1,85 @@
+# RG6-09 — real ORAS bidirectional interoperability smoke (v0.6.0 Final Release
+# Review, HARD RELEASE BLOCKER): 只在 workflow_dispatch 手动触发；
+# GITHUB_TOKEN（不用 PAT）+ packages:write；GitHub-hosted runner 安装官方 ORAS CLI
+# （https://oras.land/install.sh，绝不使用第三方镜像/来源不明二进制）。
+#
+# ORAS 是独立 interoperability oracle（D187）——不加入 package.json，不是 runtime
+# dependency。脚本（scripts/release-interop-oras.mjs）断言：
+#   ORAS-01 — dsh-pack publish → 真实 `oras discover` 可见 referrer（subject/referrer）
+#   ORAS-02 — 外部 oras attach（DSH carrier layer mediaType）→ dsh-pack discover
+#             完整 OCI + DSH Evidence 验证 PASS
+#
+# 环境布局（延续 registry-interop-ghcr.yml）：dsh-pack 的 devDependencies 通过
+#   link:../deepseek-harness/<pkg> 依赖 sibling DeepSeek Harness 源码树；
+# CI 必须双 checkout（dsh-pack + deepseek-harness@<pin>）并先 build harness 的 host face。
+name: Release Interop ORAS (RG6-09)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  oras-interop:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dsh-pack
+    steps:
+      - name: Checkout dsh-pack
+        uses: actions/checkout@v4
+        with:
+          path: dsh-pack
+
+      - name: Checkout deepseek-harness (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: 47f943859bef60e4160492346772ded9b24f765a
+          path: deepseek-harness
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: dsh-pack/pnpm-lock.yaml
+
+      - name: DSH dependency preflight
+        run: |
+          set -e
+          test -f ../deepseek-harness/package.json && echo "OK ../deepseek-harness"
+          for d in vendor/cordis vendor/include vendor/loader packages/boot/app-boot packages/interaction/commands packages/util/home-paths; do
+            test -d "../deepseek-harness/$d" && echo "OK $d" || { echo "FAIL: $d missing"; exit 1; }
+          done
+
+      - name: Build deepseek-harness host lib (tsc -b + tsdown)
+        working-directory: deepseek-harness
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build:lib:host
+
+      - name: Install dsh-pack dependencies (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck + build (lib/)
+        run: pnpm run typecheck
+
+      - name: Install the OFFICIAL ORAS CLI (independent oracle, D187)
+        run: |
+          curl -sL https://oras.land/install.sh | bash
+          export PATH="$HOME/.local/bin:$PATH"
+          oras version
+
+      - name: Real ORAS bidirectional interoperability smoke (ORAS-01 / ORAS-02)
+        run: node scripts/release-interop-oras.mjs
+        env:
+          DSH_REGISTRY_USERNAME: ${{ github.actor }}
+          DSH_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          RUN_ID: ${{ github.run_id }}

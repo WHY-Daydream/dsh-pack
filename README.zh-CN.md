@@ -7,7 +7,7 @@
 [English](./README.md) · **简体中文**
 
 [![npm version](https://img.shields.io/npm/v/@why-daydream/dsh-pack)](https://www.npmjs.com/package/@why-daydream/dsh-pack)
-[![GitHub Release](https://img.shields.io/github/v/release/WHY-Daydream/dsh-pack)](https://github.com/WHY-Daydream/dsh-pack/releases/tag/v0.4.2)
+[![GitHub Release](https://img.shields.io/github/v/release/WHY-Daydream/dsh-pack)](https://github.com/WHY-Daydream/dsh-pack/releases/tag/v0.5.0)
 [![GHCR Protocol](https://img.shields.io/badge/GHCR-8%2F8%20PASS-brightgreen)](https://github.com/WHY-Daydream/dsh-pack/actions/runs/33292227705)
 [![License](https://img.shields.io/github/license/WHY-Daydream/dsh-pack)](LICENSE)
 
@@ -24,7 +24,7 @@ dsh plugin --profile demo add @why-daydream/dsh-pack
 固定版本：
 
 ```bash
-dsh plugin --profile demo add @why-daydream/dsh-pack@0.4.2
+dsh plugin --profile demo add @why-daydream/dsh-pack@0.5.0
 ```
 
 ### npm
@@ -102,6 +102,8 @@ v0.4   Runnable      —— Agent Image 模型：可命名、可版本化、可�
 v0.4.1 Distributed   —— OCI push/pull（GHCR、Docker Hub、任意 Registry）
   ↓
 v0.4.2 Governed      —— image lock + trust.yaml + local prune + Real GHCR 8/8 PASS
+  ↓
+v0.5.0 Verifiable   —— Evidence Chain（provenance / SBOM / capability / attestation）+ Trust Policy v2
 ```
 
 ---
@@ -180,11 +182,11 @@ CLI can tighten policy, never weaken it —— CLI 只能收紧策略，绝不�
 npm install @why-daydream/dsh-pack
 ```
 
-📦 [@why-daydream/dsh-pack](https://www.npmjs.com/package/@why-daydream/dsh-pack) — `v0.4.2`
+📦 [@why-daydream/dsh-pack](https://www.npmjs.com/package/@why-daydream/dsh-pack) — `v0.5.0`
 
 ### GitHub Release
 
-🔖 [v0.4.2 — Distribution Governance](https://github.com/WHY-Daydream/dsh-pack/releases/tag/v0.4.2)
+🔖 [v0.5.0 — Verifiable Agent Artifact](https://github.com/WHY-Daydream/dsh-pack/releases/tag/v0.5.0)
 
 ### OCI / GHCR
 
@@ -232,6 +234,7 @@ npm install @why-daydream/dsh-pack
 
 - `DESIGN.md` —— 协议冻结（格式、哈希算法、安全模型、命令行为）
 - `DESIGN-v0.4.2.md` —— 四层 Governance 设计（image lock / trust.yaml / local prune / GHCR 8/8）
+- `DESIGN-v0.5.0.md` —— Evidence Chain + Trust Policy v2（D64–D139）
 - `TRACEABILITY.md` —— 冻结决策 → 源文件 → 测试用例逐条追踪
 - `CHANGELOG.md` —— 版本历史
 - `LICENSE` —— MIT

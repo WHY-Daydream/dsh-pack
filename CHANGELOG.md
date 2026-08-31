@@ -3,6 +3,16 @@
 本项目的版本历史。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] - 2026-08-31
+
+**Verifiable Agent Artifact** — Evidence Chain + Trust Policy v2（D64–D139 冻结，DESIGN-v0.5.0.md）：
+
+- **Artifact Identity**：immutable `contentHash` + Artifact Signature（`VALID ≠ TRUSTED`）
+- **Build Evidence**：Build Provenance（build-time capture，D68–D72）+ CycloneDX SBOM（D73–D80，document digest-bound）
+- **Runtime Evidence**：Declared Capability（D81–D88）+ Runtime Attestation（D89–D99，必须 exact-match 当前 execution target）
+- **Policy**：trust.yaml v2（D100–D111）——只消费已验证 Evidence，冲突 trusted Evidence fail-closed `AMBIGUOUS → DENY`
+- **RC Hardening**：7 个对抗攻击面（N3/N7/N4/N5/N1/N2/N6），发现并修复 5 个真实实现缺口，324 条回归测试，16 条 Release Invariants（RI-01–RI-16，见 RELEASE-INVARIANTS.md）全 PASS
+
 ## [Unreleased]
 
 - **v0.5.0-beta.2（trust.yaml v2 / Trust Policy Binding，D100–D111 冻结，DESIGN-v0.5.0.md §10）**：

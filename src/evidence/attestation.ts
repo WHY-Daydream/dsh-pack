@@ -141,6 +141,68 @@ export function attestationResultDigest(normalized: {
   return `sha256:${sha256Hex(canonicalJson(normalized))}`
 }
 
+/** The frozen D96 field set the attestation semantic identity is recomputed from. */
+const ATTESTATION_SEMANTIC_FIELDS = [
+  'declaredCapabilityDigest', 'observation', 'coldBoot', 'observed',
+  'comparison', 'effects', 'cleanup', 'environment',
+] as const
+
+/**
+ * D125 — recompute the attestation SEMANTIC fields from the VERIFIED document
+ * bytes: coverage, environment, observed capabilities, and the semantic key
+ * (normalized resultDigest + os/arch target + coverage).
+ *
+ * Shared by BOTH evidence paths so they can never diverge (beta.1 D178):
+ *   - the LOCAL collection path (service.ts `attestationCandidates`)
+ *   - the REMOTE discovery path (evidence/remote/trust.ts)
+ *
+ * The semantic key is recomputed from the document's normalized content (the
+ * frozen D96 field set), never taken from a self-declared `resultDigest`
+ * field — a forged declared value cannot collapse genuinely conflicting
+ * observations. The document digest embeds non-deterministic run metadata
+ * (D96), so it is NOT the equivalence anchor: two runs observing the same
+ * facts are equivalent duplicates, not a conflict (D110).
+ */
+export function attestationSemanticFields(
+  documentBytes: Buffer,
+): { coverage?: 'complete' | 'partial' | 'unknown'; environment?: { os: string; arch: string }; observed: string[]; semanticKey?: string } {
+  let doc: {
+    observation?: { coverage?: unknown }
+    environment?: { os?: unknown; arch?: unknown }
+    observed?: { tools?: unknown; skills?: unknown; services?: unknown; providers?: unknown }
+  }
+  try {
+    doc = JSON.parse(documentBytes.toString('utf8'))
+  } catch {
+    return { observed: [] }
+  }
+  const coverage = doc.observation?.coverage
+  const envOs = typeof doc.environment?.os === 'string' ? doc.environment.os : undefined
+  const envArch = typeof doc.environment?.arch === 'string' ? doc.environment.arch : undefined
+  const stringIds = (value: unknown): string[] => Array.isArray(value)
+    ? value.filter((x): x is string => typeof x === 'string')
+    : []
+  const observed = [
+    ...stringIds(doc.observed?.tools), ...stringIds(doc.observed?.skills),
+    ...stringIds(doc.observed?.services), ...stringIds(doc.observed?.providers),
+  ]
+  const normalizedPortion: Record<string, unknown> = {}
+  for (const field of ATTESTATION_SEMANTIC_FIELDS) {
+    if (field in doc) normalizedPortion[field] = (doc as unknown as Record<string, unknown>)[field]
+  }
+  const normalizedDigest = `sha256:${sha256Hex(canonicalJson(normalizedPortion))}`
+  const semanticKey = (
+    envOs !== undefined && envArch !== undefined
+    && (coverage === 'complete' || coverage === 'partial' || coverage === 'unknown')
+  ) ? `${normalizedDigest}|${envOs}|${envArch}|${coverage}` : undefined
+  return {
+    ...(coverage === 'complete' || coverage === 'partial' || coverage === 'unknown' ? { coverage } : {}),
+    ...(envOs !== undefined && envArch !== undefined ? { environment: { os: envOs, arch: envArch } } : {}),
+    observed,
+    ...(semanticKey !== undefined ? { semanticKey } : {}),
+  }
+}
+
 /**
  * Run the Phase-A cold-boot attestation for a `.dshpack`:
  * 1. materialize a disposable DSH_HOME/profile/workspace/effects (D92)

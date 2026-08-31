@@ -232,7 +232,9 @@ function localComponents(input: SbomBuildInput): CycloneDxComponent[] {
         props.push({ name: 'dsh-pack:content-digest', value: `sha256:${sha256Hex(tgzBytes)}` })
         const meta = input.vendoredMetadata?.get(tgzMatch[1] as string)
         if (meta !== undefined) {
-          props.push(...packageMetadataProperties(meta.manifest ?? {}, meta.files))
+          // meta.manifest may be undefined (tgz without package.json) — pass it
+          // through so D139 can keep un-inspected packages UNKNOWN (D78/D139).
+          props.push(...packageMetadataProperties(meta.manifest, meta.files))
         }
       }
     }
@@ -258,15 +260,15 @@ function closureVersion(closure: Record<string, string>, name: string): string |
 // --- package metadata facts (D77/D78/D79) ---
 
 function packageMetadataProperties(
-  manifest: Record<string, unknown>,
+  manifest: Record<string, unknown> | undefined,
   files?: readonly string[],
 ): CycloneDxProperty[] {
   const props: CycloneDxProperty[] = []
   // D79: license is the DECLARED value, or UNKNOWN — never guessed.
-  const license = typeof manifest.license === 'string' && manifest.license !== '' ? manifest.license : undefined
+  const license = manifest !== undefined && typeof manifest.license === 'string' && manifest.license !== '' ? manifest.license : undefined
   props.push({ name: 'dsh-pack:license', value: license ?? 'UNKNOWN' })
   // D77: lifecycle existence + scriptDigest (never the raw script text).
-  const scripts = manifest.scripts
+  const scripts = manifest?.scripts
   if (scripts !== null && typeof scripts === 'object') {
     const scriptMap = scripts as Record<string, unknown>
     for (const name of LIFECYCLE_SCRIPTS) {
@@ -276,9 +278,14 @@ function packageMetadataProperties(
       }
     }
   }
-  // D78: native is an indicator only — never a runtime compatibility claim.
-  const reasons = nativeReasons(manifest, files)
-  props.push({ name: 'dsh-pack:native:detected', value: reasons.length > 0 ? 'true' : 'false' })
+  // D78/D139: native is an indicator only — never a runtime compatibility
+  // claim. When the package manifest is UNAVAILABLE, script signals cannot be
+  // inspected: only factual FILE signals are reported, and the state is never
+  // fabricated as `false` for an un-inspected package (UNKNOWN stays UNKNOWN).
+  const reasons = nativeReasons(manifest ?? {}, files)
+  if (manifest !== undefined || reasons.length > 0) {
+    props.push({ name: 'dsh-pack:native:detected', value: reasons.length > 0 ? 'true' : 'false' })
+  }
   if (reasons.length > 0) props.push({ name: 'dsh-pack:native:reasons', value: reasons.join(',') })
   return props
 }

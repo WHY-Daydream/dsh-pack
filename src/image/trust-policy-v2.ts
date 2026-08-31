@@ -103,9 +103,18 @@ export interface SbomCandidate extends EvidenceCandidate {
   documentKey?: string
 }
 
-/** A verified/unverified runtime-attestation candidate — documentKey is the D110 semantic document key. */
+/**
+ * A verified/unverified runtime-attestation candidate. Per D125 the semantic
+ * identity of an attestation is the normalized resultDigest + execution target
+ * + coverage — NOT the document digest (the document embeds non-deterministic
+ * run metadata, D96, so two runs that observed the same facts have different
+ * document digests). `semanticKey` carries that identity; `documentKey` keeps
+ * the raw document digest for audit/tests.
+ */
 export interface AttestationCandidate extends EvidenceCandidate {
   documentKey?: string
+  /** D125 semantic identity: normalized resultDigest + os/arch target + coverage. */
+  semanticKey?: string
   coverage?: 'complete' | 'partial' | 'unknown'
   environment?: { os: string; arch: string }
   observed: string[]
@@ -670,9 +679,9 @@ export function evaluateTrustPolicyV2(
         .join(', ')
       fail('execution-target', `attested environment (${attested}) does not match current execution target ${input.executionTarget.os}/${input.executionTarget.arch} — exact match required (D111)`)
     } else {
-      const distinct = new Set(targetMatched.map((c) => c.documentKey ?? c.statementDigest))
+      const distinct = new Set(targetMatched.map((c) => c.semanticKey ?? c.documentKey ?? c.statementDigest))
       if (distinct.size > 1) {
-        fail('execution-target', `AMBIGUOUS: ${targetMatched.length} trusted attestations for ${input.executionTarget.os}/${input.executionTarget.arch} with ${distinct.size} conflicting documents (D110)`)
+        fail('execution-target', `AMBIGUOUS: ${targetMatched.length} trusted attestations for ${input.executionTarget.os}/${input.executionTarget.arch} with ${distinct.size} non-equivalent attestation semantics (D110/D125)`)
         evidenceTrust.attestation = 'AMBIGUOUS'
       } else {
         pass('execution-target')

@@ -331,17 +331,28 @@ export class DefaultImageService {
     }
   }
 
-  /** Ensure a remote ref's image is local: pull when missing (cache-only policy). */
+  /**
+   * Ensure a remote ref's image is local. A remote DIGEST ref (immutable
+   * identity) may be served from the local cache (a cache hit that run() still
+   * re-verifies); a remote TAG ref (mutable alias) must resolve the CURRENT
+   * registry identity — the local tag mirror from a previous pull is a stale
+   * cache of a past resolution and must never satisfy a remote mutable ref
+   * (D112/D129: tag ≠ immutable identity, cache stores bytes, not decisions).
+   */
   private async ensureLocal(refStr: string): Promise<PullResult | undefined> {
-    try {
-      await resolveImage(this.store, parseReference(refStr))
-      return undefined // already local (tag mirror from a previous pull)
-    } catch (error) {
-      if (!(error instanceof ImageResolveError)) throw error
-      // not local → digest-first pull (verify → trust → import). Trust policy
-      // enforcement stays in run() — a rejected image must fail before boot.
-      return pullImage(this.store, refStr, { installedDshVersion: this.context.installedDshVersion })
+    const ref = parseReference(refStr)
+    if (ref.digest !== undefined) {
+      try {
+        await resolveImage(this.store, ref)
+        return undefined // already local — immutable identity, legitimate cache hit
+      } catch (error) {
+        if (!(error instanceof ImageResolveError)) throw error
+      }
     }
+    // tag ref, or digest not cached → digest-first pull from the registry
+    // (verify → trust → import). Trust policy enforcement stays in run() —
+    // a rejected image must fail before boot.
+    return pullImage(this.store, refStr, { installedDshVersion: this.context.installedDshVersion })
   }
 
   /** All tag refs, for `image ls` (REPOSITORY / TAG / DIGEST). */

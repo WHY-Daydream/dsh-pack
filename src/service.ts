@@ -32,7 +32,7 @@ import {
   type ProvenanceCandidate, type SbomCandidate,
 } from './image/trust-policy-v2.ts'
 import { loadProfileDir, resolveDshHome, resolveInstallAnchor } from './profile-reader.ts'
-import { prettyJson, sha256Hex, todayStamp, utcNowIso } from './canonical.ts'
+import { canonicalJson, prettyJson, sha256Hex, todayStamp, utcNowIso } from './canonical.ts'
 import type {
   DependencyTree, EvidenceEnvelope, InstallOptions, InstallResult, KeygenResult, Manifest, PackDiff, PackInspection,
   PackOptions, PackResult, SignOptions, SignResult, VerificationReport, Warning,
@@ -417,16 +417,25 @@ export class DefaultPackager implements PackagerService {
     })
   }
 
-  /** D109/D110: sbom candidates — documentKey is the semantic document anchor. */
+  /** D109/D110/D120: sbom candidates — documentKey is the semantic document anchor.
+   *  D120 (rc.1): when a document file EXISTS under the claimed digest it MUST
+   *  hash to that digest — a substituted SBOM document makes the candidate
+   *  UNVERIFIED (mirrors the attestation document check). A MISSING document
+   *  keeps the v0.3 signing workflow semantics (envelope-only trust), because
+   *  `evidence.sign` does not require a document file. */
   private sbomCandidates(collectionRoot: string, contentHash: string): SbomCandidate[] {
     return this.scanEnvelopes(collectionRoot, 'sbom').map((envelope) => {
       const base = this.verifiedBase(envelope, contentHash)
       const statement = envelope.statement as { sbomDigest?: { value?: unknown } } | undefined
       const digestValue = statement?.sbomDigest?.value
-      return {
-        ...base,
-        ...(typeof digestValue === 'string' && digestValue !== '' ? { documentKey: digestValue } : {}),
+      if (typeof digestValue !== 'string' || digestValue === '') {
+        return { ...base }
       }
+      const documentFile = join(collectionRoot, 'documents', `${digestValue}.cdx.json`)
+      if (existsSync(documentFile) && sha256Hex(readFileSync(documentFile, 'utf8')) !== digestValue) {
+        return { ...base, verified: false, documentKey: digestValue }
+      }
+      return { ...base, documentKey: digestValue }
     })
   }
 
@@ -469,9 +478,30 @@ export class DefaultPackager implements PackagerService {
         ...stringIds(doc.observed?.tools), ...stringIds(doc.observed?.skills),
         ...stringIds(doc.observed?.services), ...stringIds(doc.observed?.providers),
       ]
+      // D125: semantic identity = normalized resultDigest + target + coverage.
+      // The document digest (documentKey) embeds non-deterministic run metadata
+      // (D96), so it must NOT be the equivalence anchor — two runs that observed
+      // the same facts are equivalent duplicates, not a conflict. The identity is
+      // RECOMPUTED from the document's normalized content (the frozen D96 field
+      // set), never taken from the self-declared resultDigest field — a forged
+      // declared value cannot collapse genuinely conflicting observations.
+      const NORMALIZED_FIELDS = [
+        'declaredCapabilityDigest', 'observation', 'coldBoot', 'observed',
+        'comparison', 'effects', 'cleanup', 'environment',
+      ] as const
+      const normalizedPortion: Record<string, unknown> = {}
+      for (const field of NORMALIZED_FIELDS) {
+        if (field in doc) normalizedPortion[field] = (doc as unknown as Record<string, unknown>)[field]
+      }
+      const normalizedDigest = `sha256:${sha256Hex(canonicalJson(normalizedPortion))}`
+      const semanticKey = (
+        envOs !== undefined && envArch !== undefined
+        && (coverage === 'complete' || coverage === 'partial' || coverage === 'unknown')
+      ) ? `${normalizedDigest}|${envOs}|${envArch}|${coverage}` : undefined
       return {
         ...base,
         documentKey: digestValue,
+        ...(semanticKey !== undefined ? { semanticKey } : {}),
         ...(coverage === 'complete' || coverage === 'partial' || coverage === 'unknown' ? { coverage } : {}),
         ...(envOs !== undefined && envArch !== undefined ? { environment: { os: envOs, arch: envArch } } : {}),
         observed,
@@ -480,6 +510,24 @@ export class DefaultPackager implements PackagerService {
   }
 
   async install(file: string, opts: InstallOptions): Promise<InstallResult> {
+    // D115 (rc.1): lifecycle/package execution must NEVER happen before the
+    // trust decision. When a policy gate is requested, evaluate the FULL v2
+    // policy FIRST and refuse to materialize on any non-ALLOW verdict —
+    // installPack runs `pnpm install`, which would execute the profile's
+    // preinstall/install/postinstall/prepare scripts.
+    if (opts.policy !== undefined) {
+      const evaluation = await this.policy(file, {
+        ...(opts.policy.repository !== undefined ? { repository: opts.policy.repository } : {}),
+        ...(opts.policy.collectionDir !== undefined ? { collectionDir: opts.policy.collectionDir } : {}),
+        ...(opts.policy.executionTarget !== undefined ? { executionTarget: opts.policy.executionTarget } : {}),
+      })
+      if (evaluation.verdict.decision !== 'ALLOW') {
+        throw new Error(
+          `dsh-pack: install blocked by trust policy before materialization (${evaluation.verdict.decision}): `
+          + evaluation.verdict.errors.join('; '),
+        )
+      }
+    }
     const buffer = readFileSync(file)
     const { result, staging } = await installPack(buffer, opts, {
       home: this.home(),

@@ -219,9 +219,14 @@ export class RegistryClient {
    * RAW result — callers read status (412 conflict) and headers (OCI-Subject,
    * Docker-Content-Digest). The strict putManifest is unchanged.
    */
-  async putManifestRaw(tagOrDigest: string, manifestBytes: Buffer, opts?: { ifMatch?: string }): Promise<RegistryFetchResult> {
+  async putManifestRaw(tagOrDigest: string, manifestBytes: Buffer, opts?: { ifMatch?: string; contentType?: string }): Promise<RegistryFetchResult> {
+    // GHCR gate fix (RI-28): the Content-Type MUST match the payload — a
+    // referrers-tag index is an OCI IMAGE INDEX, not a manifest. Real
+    // registries (Docker Registry/GHCR) reject a mediaType/Content-Type
+    // mismatch with 400; the caller (updateReferrersTag) passes the index
+    // media type explicitly, everything else stays manifest.
     const headers: Record<string, string> = {
-      'Content-Type': OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+      'Content-Type': opts?.contentType ?? OCI_IMAGE_MANIFEST_MEDIA_TYPE,
       'Content-Length': String(manifestBytes.length),
     }
     if (opts?.ifMatch !== undefined) headers['If-Match'] = opts.ifMatch

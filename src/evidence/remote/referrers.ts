@@ -303,7 +303,13 @@ export async function updateReferrersTag(
   for (;;) {
     const merged = [...entries, descriptor]
     const indexBytes = buildFallbackIndex(merged)
-    const put = await client.putManifestRaw(tag, indexBytes, etag !== undefined ? { ifMatch: etag } : undefined)
+    // GHCR gate fix: the referrers-tag holds an OCI IMAGE INDEX — push it
+    // with the index Content-Type, never the manifest one (Docker
+    // Registry/GHCR reject the mismatch with 400).
+    const put = await client.putManifestRaw(tag, indexBytes, {
+      ...(etag !== undefined ? { ifMatch: etag } : {}),
+      contentType: OCI_IMAGE_INDEX_MEDIA_TYPE,
+    })
     if (put.status === 200 || put.status === 201) {
       return { tag, concurrencyProtection: etag !== undefined ? 'conditional' : 'none', retries }
     }

@@ -126,29 +126,51 @@ Envelope statement.subject.contentHash = C
 | **D154** | Remote Evidence cache 只能缓存 bytes/object identity，不能缓存 `TRUSTED` / `ALLOW` verdict |
 | **D155** | Evidence publication 是**附加关系**，不得改变已有 Agent Image 的 `contentHash` 或 OCI manifest M |
 | **D156** | Discover / pull / verify Evidence 永远不得 materialize 或执行 Agent/package code |
+| **D157** | Remote discovery locator 是 `(registry, repository, OciManifestDigest)`，裸 digest 不是完整远程定位身份；标准 Referrers discovery 与 subject 位于同一 repository namespace |
+| **D158** | Referrers API 的所有 `Link rel=next` 页面必须**完整消费**后，才能进行 semantic dedup / ambiguity / policy；partial enumeration ≠ complete Evidence set |
+| **D159** | OCI Evidence carrier 必须 **exactly-one** Signed Evidence Envelope；external document 是否存在由 verified Evidence schema 决定，需要时 must exactly-one 且同时通过 OCI descriptor digest/size 与 DSH document digest 校验；禁止 `.find()`/first-layer-wins，重复/歧义 carrier 无效 |
+
+**D151 注释（design review 2026-08-31 精确化）**：
+`OCI-Subject` 是 **push-time acknowledgement**——PUT 带 `subject` 的 manifest 时 Registry 处理了该 subject 才必须返回该 header；
+它不是 discovery capability probe。Discovery 能力以 `GET /v2/<name>/referrers/<digest>` 的响应决定：
+`200` → native Referrers API；`404` → MUST 进入标准 referrers-tag fallback（D151）。
+
+**D152 注释（design review 2026-08-31 精确化）**：
+`?artifactType=` 过滤是 Registry 的 **SHOULD**，不是无条件 MUST；只有响应包含
+`OCI-Filters-Applied: artifactType` header 才能认为过滤真正生效；无该 header 必须视为**未过滤**
+（本地按 artifactType 过滤仅作优化，不作为正确性依据）。`artifactType` 永远只是 hint，
+最终 Evidence 类型来自 verified `Envelope.type`。
 
 ## 4. 协议流程
 
-### 4.1 Discovery order（先 resolve immutable M，再 discover）
+### 4.1 Discovery order（先 resolve immutable M，再 discover；read path）
 
 ```text
-1. resolve tag → OCI ManifestDigest M
+1. resolve tag → OCI ManifestDigest M        （locator = (registry, repository, M)，D157）
 2. verify / pull Agent Image M（OCI integrity）
 3. recompute DSH contentHash C
-4. GET referrers(M)                    [end-12a]
-     ├── 200 → image index（按需 ?artifactType= 过滤 [end-12b]）
-     └── 404 → referrers-tag fallback（sha256-<64hex> tag → image index）
-5. filter interesting artifactTypes    （hint only，D152）
-6. fetch every candidate manifest       （verify digest）
-7. verify OCI descriptor / digest 完整性
-8. fetch envelope / document blobs      （verify digest）
-9. verify DSH Evidence（envelope signature / issuer / subject.contentHash==C / envelope.type）
-10. merge into existing Evidence Collection semantics（D153：复用 D110/D124–D128）
-11. evaluate Trust Policy v2
+4. GET referrers(M)                          [end-12a]
+     ├── 200 → image index（?artifactType= 过滤仅在 OCI-Filters-Applied 确认时视为生效 [end-12b]）
+     └── 404 → referrers-tag fallback（sha256-<64hex> tag → image index）（D151）
+5. follow ALL Link rel=next pages            （D158：pagination 完整消费，partial ≠ complete）
+6. referrer descriptors = UNTRUSTED enumeration metadata
+     （descriptor 的 digest/size/artifactType/annotations 均不可信，只作为获取依据）
+7. fetch candidate manifest by digest        （recompute/verify OCI digest + size）
+8. verify manifest.subject.digest == M       （D150：foreign subject 拒绝）
+9. fetch layers by descriptor                （verify each OCI descriptor digest/size）
+10. verify DSH Evidence（envelope.type / signature / issuer / subject.contentHash==C
+      / D159 严格 cardinality：exactly-one envelope，required document exactly-one）
+11. merge into existing Evidence Collection semantics（D153：复用 D110/D124–D128）
+12. evaluate Trust Policy v2
 ```
 
 **禁止** `discover evidence for :prod`：tag 会漂移（T0→M1, T1→M2），Evidence 必须
 明确属于 M1 还是 M2（D149，天然继承 N1 的 `tag ≠ identity`）。
+
+**禁止**把 referrer descriptor 直接变成 candidate（`referrer list says
+artifactType=runtime-attestation → create candidate immediately` ❌）——
+必须走 6→10 的硬顺序：fetch manifest → verify digest/size → verify subject=M →
+fetch layers → verify descriptors → 才进入 DSH Evidence verification。
 
 ### 4.2 Push sequence（Evidence Publication，alpha.2）
 
@@ -318,6 +340,41 @@ wrong contentHash / tampered layer / untrusted issuer /
 conflicting remote attestations / tag drift / cache stale / fallback race
 ```
 
+### alpha.1 — Remote Evidence Discovery（scope 冻结，design review 已批准）
+
+**只实现（read path）**：
+
+```text
+fully-qualified remote image reference
+  → resolve mutable tag → immutable M
+  → GET referrers(M)（404 → 标准 referrers-tag fallback）
+  → follow ALL Link pagination（D158）
+  → collect descriptors（untrusted enumeration metadata，D157/D150）
+  → fetch manifest by digest（OCI manifest / subject integrity）
+  → fetch envelope / document blobs（OCI blob integrity）
+  → DSH envelope validation（envelope.type / signature / issuer）
+  → subject.contentHash == actual C
+  → produce verified remote Evidence candidates
+```
+
+**不做**：push Evidence（alpha.2）/ cache（alpha.3）/ Trust Policy 集成（beta.1）/
+remote run 集成 / GHCR acceptance / ORAS E2E（beta.2）。
+
+**alpha.1 冻结测试 A1–A10**（★ = North-Star regression）：
+
+| ID | 场景 | 关键决策 |
+|----|------|----------|
+| A1 | native Referrers API 发现合法 Evidence | D151 |
+| A2 | tag 先 resolve 为 M；discovery 永不直接使用 tag | D149 |
+| A3 | foreign OCI subject M2 拒绝 | D150 |
+| A4 | OCI M 正确但 DSH contentHash C2 错误 → 拒绝 | D150 ★ |
+| A5 | artifactType 撒谎，verified Envelope.type 胜出 | D152 |
+| A6 | 请求过滤但无 OCI-Filters-Applied → 视为未过滤 | D152 注释 |
+| A7 | 多页 referrers → 全部页面收集后才出结果 | D158 ★ |
+| A8 | 重复/歧义 envelope layer 拒绝 | D159 |
+| A9 | required external document 缺失 / digest 不符 → 拒绝 | D159 ★ |
+| A10 | referrers 404 → 标准 tag-schema fallback | D151 |
+
 ## 10. 实现原则：ORAS 只是 interop oracle，不是 runtime 依赖
 
 ```text
@@ -334,9 +391,21 @@ ORAS CLI
 避免把外部 CLI 变成运行时依赖；`oras discover` 在 ORAS 文档中仍标为 preview，
 只用于验证我们的 client 行为与生态一致。
 
-## 11. Spike 出口标准（先 review design，再决定 alpha.1 是否编码）
+## 11. Spike 出口标准（design review 结论：Conditional PASS → 4/4 PASS）
 
-1. NS-1 / NS-2 / NS-3 三条 North-Star 在 design review 中无异议；
-2. D149–D156 冻结（本文件第 3 节），无开放争议项；
-3. media-type / schema（第 2 节）与协议流程（第 4 节）可作为 alpha.1 的编码契约；
-4. out of scope 边界（Strong Runtime Isolation / Encryption / GC/revocation / 新 trust features）不再扩大。
+**design review（2026-08-31）结论：**
+
+| Section 11 Exit | 结果 |
+|-----------------|------|
+| NS-1 / NS-2 / NS-3 无异议 | ✅ PASS |
+| D149–D156 无方向性争议 | ✅ PASS（补充 **D157–D159** + D151/D152 精确化注释，均为实现契约级收紧，非新 feature） |
+| Schema / protocol 可直接作为编码契约 | ✅ PASS（4 个协议级契约已冻结：**D157** repository-scoped locator / **D158** pagination 完整消费 / **D159** 严格 carrier cardinality / referrer descriptor = untrusted enumeration metadata 硬顺序） |
+| Out-of-scope 不扩大 | ✅ PASS（revocation / delete-GC / retention / timestamp authority / transparency log / Sigstore-Rekor / Encryption / sandbox / 新 trust selector 一律不进入 v0.6） |
+
+> **结论：`v0.6.0-alpha.1 Remote Evidence Discovery` = GO。**
+> scope 与冻结测试见第 9 节（仅 discovery/read path；pagination 完整性 A7、
+> contentHash 绑定 A4、document cardinality A9 为 North-Star regression）。
+
+复核说明：review 前的四条原始出口标准（NS 无异议 / D149–D156 无争议 /
+schema 可作契约 / out-of-scope 不扩大）经本轮 docs-only protocol tightening
+后**全部满足**；本文件未含任何 production code，v0.5.0 资产未触碰。

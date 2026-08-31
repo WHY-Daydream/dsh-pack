@@ -59,3 +59,8 @@ export function blobEndpoint(base: string, repo: string, digest: string): string
 export function uploadsEndpoint(base: string, repo: string): string {
   return `${base}/v2/${repo}/blobs/uploads/`
 }
+
+/** `GET /v2/<repo>/referrers/<digest>` — distribution-spec 1.1 Referrers API (end-12a/12b). */
+export function referrersEndpoint(base: string, repo: string, subjectDigest: string): string {
+  return `${base}/v2/${repo}/referrers/${encodeURIComponent(subjectDigest)}`
+}

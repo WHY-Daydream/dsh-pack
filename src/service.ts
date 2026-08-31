@@ -32,7 +32,7 @@ import {
   type ProvenanceCandidate, type SbomCandidate,
 } from './image/trust-policy-v2.ts'
 import { loadProfileDir, resolveDshHome, resolveInstallAnchor } from './profile-reader.ts'
-import { prettyJson, sha256Hex, todayStamp, utcNowIso } from './canonical.ts'
+import { canonicalJson, prettyJson, sha256Hex, todayStamp, utcNowIso } from './canonical.ts'
 import type {
   DependencyTree, EvidenceEnvelope, InstallOptions, InstallResult, KeygenResult, Manifest, PackDiff, PackInspection,
   PackOptions, PackResult, SignOptions, SignResult, VerificationReport, Warning,
@@ -478,9 +478,30 @@ export class DefaultPackager implements PackagerService {
         ...stringIds(doc.observed?.tools), ...stringIds(doc.observed?.skills),
         ...stringIds(doc.observed?.services), ...stringIds(doc.observed?.providers),
       ]
+      // D125: semantic identity = normalized resultDigest + target + coverage.
+      // The document digest (documentKey) embeds non-deterministic run metadata
+      // (D96), so it must NOT be the equivalence anchor — two runs that observed
+      // the same facts are equivalent duplicates, not a conflict. The identity is
+      // RECOMPUTED from the document's normalized content (the frozen D96 field
+      // set), never taken from the self-declared resultDigest field — a forged
+      // declared value cannot collapse genuinely conflicting observations.
+      const NORMALIZED_FIELDS = [
+        'declaredCapabilityDigest', 'observation', 'coldBoot', 'observed',
+        'comparison', 'effects', 'cleanup', 'environment',
+      ] as const
+      const normalizedPortion: Record<string, unknown> = {}
+      for (const field of NORMALIZED_FIELDS) {
+        if (field in doc) normalizedPortion[field] = (doc as unknown as Record<string, unknown>)[field]
+      }
+      const normalizedDigest = `sha256:${sha256Hex(canonicalJson(normalizedPortion))}`
+      const semanticKey = (
+        envOs !== undefined && envArch !== undefined
+        && (coverage === 'complete' || coverage === 'partial' || coverage === 'unknown')
+      ) ? `${normalizedDigest}|${envOs}|${envArch}|${coverage}` : undefined
       return {
         ...base,
         documentKey: digestValue,
+        ...(semanticKey !== undefined ? { semanticKey } : {}),
         ...(coverage === 'complete' || coverage === 'partial' || coverage === 'unknown' ? { coverage } : {}),
         ...(envOs !== undefined && envArch !== undefined ? { environment: { os: envOs, arch: envArch } } : {}),
         observed,

@@ -109,7 +109,7 @@ async function main() {
     const keyFile = join(root, 'evidence.pem')
     writeFileSync(keyFile, privateKey.export({ type: 'pkcs8', format: 'pem' }).toString())
     const envelope = signEvidence({
-      type: 'provenance',
+      type: 'build-provenance', // the DSH provenance Evidence type (PROVENANCE_EVIDENCE_TYPE)
       subjectContentHash: contentHash,
       statement: { schemaVersion: 1, format: 'dsh-test', note: `ghcr-negative-${RUN_ID}` },
       keyPath: keyFile,

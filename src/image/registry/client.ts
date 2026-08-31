@@ -10,7 +10,7 @@
 import { basicAuthHeader, loadRegistryCredentials, parseWwwAuthenticate, type AuthChallenge, type RegistryCredentials } from './auth.ts'
 import { digestOf, manifestDigestOf } from './descriptor.ts'
 import { validateOciManifest, OCI_IMAGE_MANIFEST_MEDIA_TYPE, type OciImageManifest } from './manifest.ts'
-import { blobEndpoint, manifestEndpoint, uploadsEndpoint } from './reference.ts'
+import { blobEndpoint, manifestEndpoint, referrersEndpoint, uploadsEndpoint } from './reference.ts'
 import type { OciBlobDigest, OciManifestDigest } from './types.ts'
 
 export interface RegistryFetchResult {
@@ -165,6 +165,27 @@ export class RegistryClient {
       throw new Error(`registry returned an invalid OCI envelope: ${parsed.errors.join('; ')}`)
     }
     return { bytes, digest: manifestDigestOf(bytes.toString('utf8')), manifest: parsed.manifest }
+  }
+
+  /** GET manifest bytes WITHOUT image-manifest validation — e.g. the referrers-tag IMAGE INDEX (D151 fallback). */
+  async getManifestRaw(tagOrDigest: string): Promise<RegistryFetchResult> {
+    return this.request('GET', manifestEndpoint(this.options.baseUrl, this.options.repo, tagOrDigest), {
+      Accept: 'application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json',
+    })
+  }
+
+  /** GET `/v2/<repo>/referrers/<digest>` — distribution-spec 1.1 Referrers API (end-12a/12b). Raw result; callers own status semantics. */
+  async getReferrers(subjectDigest: string, artifactType?: string): Promise<RegistryFetchResult> {
+    const url = new URL(referrersEndpoint(this.options.baseUrl, this.options.repo, subjectDigest))
+    if (artifactType !== undefined) url.searchParams.set('artifactType', artifactType)
+    return this.request('GET', url.toString(), {
+      Accept: 'application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json',
+    })
+  }
+
+  /** Raw authenticated request to an absolute URL (referrers pagination `Link rel=next`). */
+  async requestAbsolute(method: string, url: string, headers: Record<string, string> = {}, body?: Buffer): Promise<RegistryFetchResult> {
+    return this.request(method, url, headers, body)
   }
 
   /** PUT manifest; verifies the returned Docker-Content-Digest when present. */

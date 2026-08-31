@@ -81,3 +81,14 @@ jobs:
           DSH_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_OWNER: ${{ github.repository_owner }}
           RUN_ID: ${{ github.run_id }}
+
+      - name: "Real GHCR NEGATIVE acceptance gate (R8: tag drift / RC6-N4 revocation / forged C)"
+        # rc.1 (D191–D199)：同一 workflow_dispatch 内跑真实 GHCR 负面验收——
+        # mutable tag drift 不重写已解析的 immutable M；本地撤销 issuer → 同 bytes DENY；
+        # wrong digest 被完整验证链拒绝。记录 GHCR 实际 mode（native/fallback，D183）。
+        run: node scripts/registry-interop-ghcr-negative.mjs
+        env:
+          DSH_REGISTRY_USERNAME: ${{ github.actor }}
+          DSH_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          RUN_ID: ${{ github.run_id }}

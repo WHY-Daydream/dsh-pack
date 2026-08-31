@@ -373,7 +373,7 @@ describe('I6: ordering variance — referrer order never changes the semantic re
     await publishRemoteEvidence({ reference: ctx.reference, subjectDescriptor: ctx.subjectDescriptor, envelopeBytes: sbom, documentBytes: sbomDoc, artifactType: EVIDENCE_ARTIFACT_TYPES.sbom })
     await publishRemoteEvidence({ reference: ctx.reference, subjectDescriptor: ctx.subjectDescriptor, envelopeBytes: att, artifactType: EVIDENCE_ARTIFACT_TYPES['runtime-attestation'] })
 
-    const entries = ctx.mock.referrers.get(ctx.subjectDigest) ?? []
+    const entries = ctx.mock.referrersOf('company/prod', ctx.subjectDigest)
     expect(entries).toHaveLength(3)
 
     // three different registry return orders of the same referrer set

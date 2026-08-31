@@ -194,3 +194,97 @@ async function discoverViaFallbackTag(
   }
   return { source: 'tag-fallback', filtersApplied: false, descriptors: descriptorsFromIndex(fallback.body) }
 }
+
+// ============================================================================
+// alpha.2 — referrers-tag index update (publication side, D163/D164)
+// ============================================================================
+
+/** D164 — bounded retry budget for conditional fallback conflicts. */
+export const FALLBACK_RETRY_LIMIT = 3
+
+/** The transport facts of one fallback index update. */
+export interface FallbackUpdateResult {
+  tag: string
+  concurrencyProtection: 'conditional' | 'none'
+  retries: number
+}
+
+/**
+ * D163 — pull the standard referrers-tag image index:
+ *   - 404 → start from an EMPTY index
+ *   - 200 + valid image index → the current entries (+ ETag when present)
+ *   - 200 + NOT an image index → FAIL (never guess)
+ *   - any other status → FAIL
+ */
+function fallbackEntriesFrom(read: Awaited<ReturnType<RegistryClient['getManifestRaw']>>): ReferrerDescriptor[] {
+  if (read.status === 404) return []
+  if (read.status !== 200 || read.body === undefined) {
+    throw new Error(`referrers-tag read failed (status ${read.status})`)
+  }
+  if (parseImageIndex(read.body) === undefined) {
+    throw new Error('referrers-tag does not hold a valid OCI image index (D163)')
+  }
+  return descriptorsFromIndex(read.body)
+}
+
+/** Build the image index bytes for a referrers-tag (D163 append semantics). */
+function buildFallbackIndex(entries: ReferrerDescriptor[]): Buffer {
+  return Buffer.from(JSON.stringify({
+    schemaVersion: 2,
+    mediaType: OCI_IMAGE_INDEX_MEDIA_TYPE,
+    manifests: entries.map((e) => ({
+      digest: e.digest,
+      size: e.size,
+      ...(e.artifactType !== undefined ? { artifactType: e.artifactType } : {}),
+      ...(e.annotations !== undefined ? { annotations: e.annotations } : {}),
+    })),
+  }), 'utf8')
+}
+
+/**
+ * D163/D164 — append `descriptor` to the subject's standard referrers-tag
+ * index:
+ *   - existing descriptor → idempotent (no duplicate added)
+ *   - otherwise append, PRESERVING all existing entries
+ *   - conditional push (If-Match with the observed ETag) when the registry
+ *     supports conditional requests; a 412 conflict → re-read → merge → retry
+ *     (bounded by FALLBACK_RETRY_LIMIT)
+ *   - without an ETag, concurrencyProtection is honestly 'none' — the client
+ *     never claims linearizable fallback publication it cannot provide
+ */
+export async function updateReferrersTag(
+  client: RegistryClient,
+  locator: RemoteEvidenceLocator,
+  descriptor: ReferrerDescriptor,
+): Promise<FallbackUpdateResult> {
+  const tag = referrersTagFor(locator.subjectManifestDigest)
+  let read = await client.getManifestRaw(tag)
+  let entries = fallbackEntriesFrom(read)
+  let etag = read.headers['etag']
+
+  if (entries.some((e) => e.digest === descriptor.digest)) {
+    return { tag, concurrencyProtection: etag !== undefined ? 'conditional' : 'none', retries: 0 }
+  }
+
+  let retries = 0
+  for (;;) {
+    const merged = [...entries, descriptor]
+    const indexBytes = buildFallbackIndex(merged)
+    const put = await client.putManifestRaw(tag, indexBytes, etag !== undefined ? { ifMatch: etag } : undefined)
+    if (put.status === 200 || put.status === 201) {
+      return { tag, concurrencyProtection: etag !== undefined ? 'conditional' : 'none', retries }
+    }
+    if (put.status === 412 && etag !== undefined && retries < FALLBACK_RETRY_LIMIT) {
+      // conflict: re-read → merge → retry (D164, bounded)
+      retries += 1
+      read = await client.getManifestRaw(tag)
+      entries = fallbackEntriesFrom(read)
+      etag = read.headers['etag']
+      if (entries.some((e) => e.digest === descriptor.digest)) {
+        return { tag, concurrencyProtection: 'conditional', retries }
+      }
+      continue
+    }
+    throw new Error(`referrers-tag fallback push failed (status ${put.status})`)
+  }
+}

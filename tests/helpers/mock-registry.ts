@@ -26,6 +26,12 @@ export interface MockRegistryTamper {
   referrersPageStatus?: number
   /** Respond with `OCI-Filters-Applied: artifactType` on the first page (D152 note). */
   referrersFiltersApplied?: boolean
+  /** Override the OCI-Subject header value on manifest PUT (D162 wrong-value test). */
+  ociSubject?: string
+  /** Omit the OCI-Subject header on manifest PUT (D162 fallback-trigger test). */
+  ociSubjectOmit?: boolean
+  /** Fail the blob upload PUT for this digest (D161 blobs-first test). */
+  uploadFailDigest?: string
 }
 
 export interface MockRegistryOptions {
@@ -54,6 +60,15 @@ export class MockRegistry {
   readonly referrers = new Map<string, MockReferrerEntry[]>()
   /** > 0 → paginate referrers responses with `Link rel=next` (D158 tests). */
   referrersPageSize = 0
+  /**
+   * Test hook fired on manifest PUTs (before the conditional check) — used to
+   * inject a competing fallback-tag write for the D164 concurrent-update race
+   * (P10). Return `true` to consume (clear) the hook; `false` keeps it for the
+   * next PUT (so non-target refs do not consume it).
+   */
+  beforeManifestPut?: (ref: string, bytes: Buffer) => boolean
+  /** Request log in arrival order (D161 blobs-before-manifest test). */
+  readonly requests: Array<{ method: string; path: string }> = []
   tamper: MockRegistryTamper
   private readonly server: Server
   port = 0
@@ -92,6 +107,7 @@ export class MockRegistry {
   private async handle(req: IncomingMessage, res: ServerResponse, requireAuth: boolean): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const path = url.pathname
+    this.requests.push({ method: req.method ?? '', path })
 
     // token endpoint for the Bearer challenge
     if (path === '/token' && req.method === 'GET') {
@@ -190,6 +206,11 @@ export class MockRegistry {
         res.end()
         return
       }
+      if (this.tamper.uploadFailDigest === digest) {
+        res.statusCode = 500
+        res.end('{}')
+        return
+      }
       const bytes = await readBody(req)
       this.blobs.set(digest, bytes)
       res.statusCode = 201
@@ -206,6 +227,26 @@ export class MockRegistry {
       const bytes = await readBody(req)
       const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
       const entry: ManifestEntry = { bytes, digest }
+
+      // D164 test hook: inject a competing fallback-tag write before the
+      // conditional check (concurrent-update race, P10)
+      if (this.beforeManifestPut !== undefined) {
+        const done = this.beforeManifestPut(ref, bytes)
+        if (done) this.beforeManifestPut = undefined
+      }
+
+      // ETag conditional push (D164): If-Match must equal the CURRENT ref digest
+      const ifMatch = req.headers['if-match']
+      if (ifMatch !== undefined) {
+        const expected = ifMatch.replace(/^"|"$/g, '')
+        const current = this.manifests.get(ref)
+        if (current === undefined || current.digest !== expected) {
+          res.statusCode = 412
+          res.end('{}')
+          return
+        }
+      }
+
       this.manifests.set(ref, entry)
       this.manifests.set(digest, entry) // digest-addressable (criterion 3)
       if (this.tamper.configContentHash !== undefined) {
@@ -213,6 +254,19 @@ export class MockRegistry {
       }
       res.statusCode = 201
       res.setHeader('Docker-Content-Digest', digest)
+      res.setHeader('ETag', `"${digest}"`)
+      // D162 — OCI-Subject acknowledgement (a native Referrers registry echoes
+      // the manifest's subject digest on PUT; tests can omit or override it)
+      let subjectDigest: string | undefined
+      try {
+        const parsed = JSON.parse(bytes.toString('utf8')) as { subject?: { digest?: unknown } }
+        subjectDigest = typeof parsed.subject?.digest === 'string' ? parsed.subject.digest : undefined
+      } catch {
+        // not a manifest with a subject — no header
+      }
+      if (!this.tamper.ociSubjectOmit && subjectDigest !== undefined) {
+        res.setHeader('OCI-Subject', this.tamper.ociSubject ?? subjectDigest)
+      }
       res.end('{}')
       return
     }
@@ -234,6 +288,7 @@ export class MockRegistry {
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/vnd.oci.image.manifest.v1+json')
       res.setHeader('Docker-Content-Digest', entry.digest)
+      res.setHeader('ETag', `"${entry.digest}"`)
       res.end(entry.bytes)
       return
     }

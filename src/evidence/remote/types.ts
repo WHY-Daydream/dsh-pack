@@ -104,3 +104,43 @@ export type RemoteEvidenceDiscoveryResult =
       complete: false
       error: RemoteEvidenceDiscoveryError
     }
+
+// ============================================================================
+// alpha.2 — Evidence Publication (D160–D165)
+// ============================================================================
+
+/**
+ * D160 — the OCI `subject` field is a FULL descriptor (image-spec §Manifest),
+ * not a bare digest. The publication target is
+ * `(registry, repository, subjectDescriptor)` where `subjectDescriptor.digest
+ * === M`. The subject manifest may not exist yet (forward reference is valid —
+ * distribution-spec requires accepting it); clients MUST NOT preflight its
+ * existence.
+ */
+export interface RemoteSubjectDescriptor {
+  mediaType: string
+  digest: string
+  size: number
+}
+
+/** Which distribution path acknowledged the publication (D162). */
+export type EvidencePublicationMode = 'native-referrers' | 'tag-fallback'
+
+/**
+ * The result of publishing one Evidence object. Contains TRANSPORT facts
+ * only — deliberately no trust verdicts (alpha.2 is still the distribution
+ * layer: VALID Evidence ≠ TRUSTED Evidence).
+ */
+export interface EvidencePublicationResult {
+  repository: string
+  subjectManifestDigest: string
+  evidenceManifestDigest: string
+  mode: EvidencePublicationMode
+  /** Present only when the registry did not natively acknowledge the subject (D162/D163). */
+  fallback?: {
+    tag: string
+    /** D164 — whether the fallback update used conditional HTTP protection. */
+    concurrencyProtection: 'conditional' | 'none'
+    retries: number
+  }
+}

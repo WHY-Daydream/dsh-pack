@@ -205,6 +205,20 @@ export class RegistryClient {
     return expected
   }
 
+  /**
+   * PUT manifest with OPTIONAL If-Match (D164 conditional fallback push) and
+   * RAW result — callers read status (412 conflict) and headers (OCI-Subject,
+   * Docker-Content-Digest). The strict putManifest is unchanged.
+   */
+  async putManifestRaw(tagOrDigest: string, manifestBytes: Buffer, opts?: { ifMatch?: string }): Promise<RegistryFetchResult> {
+    const headers: Record<string, string> = {
+      'Content-Type': OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+      'Content-Length': String(manifestBytes.length),
+    }
+    if (opts?.ifMatch !== undefined) headers['If-Match'] = opts.ifMatch
+    return this.request('PUT', manifestEndpoint(this.options.baseUrl, this.options.repo, tagOrDigest), headers, manifestBytes)
+  }
+
   /** Verify actual bytes against a descriptor (digest + size). */
   verifyDescriptor(what: string, descriptor: { digest: string; size: number }, bytes: Buffer): void {
     const actualDigest = digestOf(bytes)

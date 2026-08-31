@@ -34,10 +34,23 @@ export interface MockRegistryTamper {
   uploadFailDigest?: string
 }
 
+/**
+ * beta.2 (D183) — registry interoperability profiles. Capability is decided by
+ * PROTOCOL BEHAVIOR, never by vendor name: these profiles simulate distinct
+ * real-world registries by their observable OCI responses.
+ *   - 'native': PUT acknowledges `OCI-Subject: M` (native Referrers 1.1);
+ *     GET /referrers/M → 200 OCI index (+ pagination when referrersPageSize).
+ *   - 'fallback-only': PUT never echoes OCI-Subject; GET /referrers/M → 404;
+ *     discovery falls back to the standard `<algorithm>-<hex>` referrers tag.
+ */
+export type MockRegistryProfile = 'native' | 'fallback-only'
+
 export interface MockRegistryOptions {
   tamper?: MockRegistryTamper
   /** 401 + Bearer challenge on unauthenticated requests. */
   requireAuth?: boolean
+  /** beta.2 (D183): the simulated registry profile (default 'native'). */
+  profile?: MockRegistryProfile
 }
 
 interface ManifestEntry {
@@ -70,12 +83,15 @@ export class MockRegistry {
   /** Request log in arrival order (D161 blobs-before-manifest test). */
   readonly requests: Array<{ method: string; path: string }> = []
   tamper: MockRegistryTamper
+  /** beta.2 (D183) — the simulated registry profile (default 'native'). */
+  readonly profile: MockRegistryProfile
   private readonly server: Server
   port = 0
   baseUrl = ''
 
   constructor(options: MockRegistryOptions = {}) {
     this.tamper = options.tamper ?? {}
+    this.profile = options.profile ?? 'native'
     this.server = createServer((req, res) => {
       void this.handle(req, res, options.requireAuth === true)
     })
@@ -111,6 +127,18 @@ export class MockRegistry {
 
     // token endpoint for the Bearer challenge
     if (path === '/token' && req.method === 'GET') {
+      // beta.2 (I7/D185) — with auth required, the token endpoint only issues
+      // tokens to clients presenting Basic credentials (anonymous clients must
+      // NOT be able to authenticate). The challenge → token → retry flow stays.
+      if (requireAuth) {
+        const authHeader = req.headers['authorization']
+        if (authHeader === undefined || !authHeader.startsWith('Basic ')) {
+          res.statusCode = 401
+          res.setHeader('WWW-Authenticate', 'Basic realm="mock"')
+          res.end('{"errors":[{"code":"UNAUTHORIZED"}]}')
+          return
+        }
+      }
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/json')
       res.end(JSON.stringify({ token: 'mock-bearer-token' }))
@@ -165,7 +193,23 @@ export class MockRegistry {
         res.end('{}')
         return
       }
-      const entries = this.referrers.get(subjectDigest) ?? []
+      // beta.2 (D183) — fallback-only profile: the native Referrers endpoint
+      // does not exist; discovery must use the standard referrers tag.
+      if (this.profile === 'fallback-only') {
+        res.statusCode = 404
+        res.end('{}')
+        return
+      }
+      // beta.2 (D186) — artifactType filtering. A registry that SUPPORTS
+      // server-side filtering (and confirms it via OCI-Filters-Applied)
+      // returns only matching referrers; a registry that ignores the query
+      // returns the FULL enumeration — the client then treats it as
+      // unfiltered (alpha.1 D152 note) and verifies every candidate.
+      let entries = this.referrers.get(subjectDigest) ?? []
+      const artifactTypeFilter = url.searchParams.get('artifactType')
+      if (this.tamper.referrersFiltersApplied === true && artifactTypeFilter !== null) {
+        entries = entries.filter((e) => e.artifactType === artifactTypeFilter)
+      }
       const pageSize = this.referrersPageSize > 0 ? this.referrersPageSize : entries.length
       const page = isNextPage ? entries.slice(pageSize) : entries.slice(0, pageSize)
       const hasMore = !isNextPage && entries.length > pageSize
@@ -258,13 +302,29 @@ export class MockRegistry {
       // D162 — OCI-Subject acknowledgement (a native Referrers registry echoes
       // the manifest's subject digest on PUT; tests can omit or override it)
       let subjectDigest: string | undefined
+      let artifactType: string | undefined
       try {
-        const parsed = JSON.parse(bytes.toString('utf8')) as { subject?: { digest?: unknown } }
+        const parsed = JSON.parse(bytes.toString('utf8')) as { subject?: { digest?: unknown }; artifactType?: unknown }
         subjectDigest = typeof parsed.subject?.digest === 'string' ? parsed.subject.digest : undefined
+        artifactType = typeof parsed.artifactType === 'string' ? parsed.artifactType : undefined
       } catch {
         // not a manifest with a subject — no header
       }
-      if (!this.tamper.ociSubjectOmit && subjectDigest !== undefined) {
+      // beta.2 (D183) — a NATIVE registry automatically indexes referrers: a
+      // manifest carrying a subject descriptor becomes discoverable via
+      // GET /referrers/<subject> (real OCI 1.1 registry behavior). The
+      // fallback-only profile never maintains this index — discovery there
+      // MUST go through the standard referrers tag instead.
+      if (this.profile !== 'fallback-only' && subjectDigest !== undefined) {
+        const existing = this.referrers.get(subjectDigest) ?? []
+        if (!existing.some((e) => e.digest === digest)) {
+          this.referrers.set(subjectDigest, [
+            ...existing,
+            { digest, size: bytes.length, ...(artifactType !== undefined ? { artifactType } : {}) },
+          ])
+        }
+      }
+      if (!this.tamper.ociSubjectOmit && this.profile !== 'fallback-only' && subjectDigest !== undefined) {
         res.setHeader('OCI-Subject', this.tamper.ociSubject ?? subjectDigest)
       }
       res.end('{}')

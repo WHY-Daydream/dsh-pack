@@ -3,6 +3,20 @@
 本项目的版本历史。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.6.0] - 2026-08-31
+
+**Distributed Verifiable Evidence** — OCI Referrers 分发 + 远程证据链（D149–D199 冻结）：
+
+- **alpha.1 Remote Discovery（D149–D158）**：remote reference → mutable tag 单次 resolve → immutable M；native Referrers API + tag-fallback 双路径；分页完整性前置（partial 枚举永不授权）
+- **alpha.2 Remote Publication（D160–D165）**：Evidence 作为 OCI referrers 发布（Docker-Content-Digest + OCI-Subject 双校验 fail-loud）；referrers-tag 并发条件更新（ETag 412 → re-read → merge → retry，无 silent lost update）
+- **alpha.3 Remote Evidence Cache（D166–D174）**：content-addressed bytes CAS + complete-only discovery snapshot；offline 显式 + `OFFLINE_CACHE_INCOMPLETE` fail loud；cache 永不存 trust verdict
+- **beta.1 Remote Trust Integration（D175–D182）**：远程 Trust Gate（online-only、每次 fresh 枚举 + current trust.yaml、incomplete 硬 DENY）；Registry/Cache 永不成为 Trust Authority
+- **beta.2 Registry Interoperability（D183–D190）**：I1–I12 契约矩阵 + 真实 GHCR gate（native/tag-fallback 由协议响应实测，非 vendor hardcode）
+- **rc.1 Adversarial Distribution Matrix（D191–D199）**：R1–R8 红队矩阵 + 4 个 North-Star（RC6-N1 部分分页永不 ALLOW / RC6-N2 跨仓零串仓 / RC6-N3 冲突恒 AMBIGUOUS→DENY / RC6-N4 撤销立即改变 verdict）；发现并修复 2 个真实安全 bug（跨源 pagination next link credential 外泄、pagination loop 无限循环）
+- **Release Invariant Review（RI-17–RI-28）**：12 条 invariant 冻结 + 反向 call-site bypass audit；修复 2 个真实 bypass（referrers first-page 非 index 伪装空集、Bearer challenge foreign realm 凭据外泄）
+- **真实 GHCR gate PASS**：I8/I9/I10 + R8a/R8b/R8c 全绿——tag 漂移、issuer 撤销、forged contentHash 均无法把 Distribution 变成 Trust Authority
+- **418 条回归测试全 PASS**（alpha.1–rc.1 全部契约 + 红队矩阵 + invariant regressions）
+
 ## [0.5.0] - 2026-08-31
 
 **Verifiable Agent Artifact** — Evidence Chain + Trust Policy v2（D64–D139 冻结，DESIGN-v0.5.0.md）：

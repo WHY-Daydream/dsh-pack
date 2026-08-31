@@ -7,7 +7,7 @@
 **English** · [简体中文](./README.zh-CN.md)
 
 [![npm version](https://img.shields.io/npm/v/@why-daydream/dsh-pack)](https://www.npmjs.com/package/@why-daydream/dsh-pack)
-[![GitHub Release](https://img.shields.io/github/v/release/WHY-Daydream/dsh-pack)](https://github.com/WHY-Daydream/dsh-pack/releases/tag/v0.5.0)
+[![GitHub Release](https://img.shields.io/github/v/release/WHY-Daydream/dsh-pack)](https://github.com/WHY-Daydream/dsh-pack/releases/tag/v0.6.0)
 [![GHCR Protocol](https://img.shields.io/badge/GHCR-8%2F8%20PASS-brightgreen)](https://github.com/WHY-Daydream/dsh-pack/actions/runs/33292227705)
 [![License](https://img.shields.io/github/license/WHY-Daydream/dsh-pack)](LICENSE)
 
@@ -24,7 +24,7 @@ dsh plugin --profile demo add @why-daydream/dsh-pack
 Pin a version:
 
 ```bash
-dsh plugin --profile demo add @why-daydream/dsh-pack@0.5.0
+dsh plugin --profile demo add @why-daydream/dsh-pack@0.6.0
 ```
 
 ### npm
@@ -104,6 +104,8 @@ v0.4.1 Distributed   — OCI push/pull (GHCR, Docker Hub, any registry)
 v0.4.2 Governed      — image lock + trust.yaml + local prune + Real GHCR 8/8 PASS
   ↓
 v0.5.0 Verifiable   — Evidence Chain (provenance / SBOM / capability / attestation) + Trust Policy v2
+  ↓
+v0.6.0 Distributed  — OCI Referrers Evidence 分发（discovery / publication / cache / trust / interop）+ 真实 GHCR gate PASS
 ```
 
 ---
@@ -182,11 +184,11 @@ CLI can tighten policy, never weaken it
 npm install @why-daydream/dsh-pack
 ```
 
-📦 [@why-daydream/dsh-pack](https://www.npmjs.com/package/@why-daydream/dsh-pack) — `v0.5.0`
+📦 [@why-daydream/dsh-pack](https://www.npmjs.com/package/@why-daydream/dsh-pack) — `v0.6.0`
 
 ### GitHub Release
 
-🔖 [v0.5.0 — Verifiable Agent Artifact](https://github.com/WHY-Daydream/dsh-pack/releases/tag/v0.5.0)
+🔖 [v0.6.0 — Distributed Verifiable Evidence](https://github.com/WHY-Daydream/dsh-pack/releases/tag/v0.6.0)
 
 ### OCI / GHCR
 

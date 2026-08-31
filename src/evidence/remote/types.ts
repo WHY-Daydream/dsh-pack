@@ -144,3 +144,116 @@ export interface EvidencePublicationResult {
     retries: number
   }
 }
+
+// ============================================================================
+// alpha.3 — Remote Evidence Cache (D166–D174)
+// ============================================================================
+
+/**
+ * D166 — the Remote Evidence Cache is a CONTENT-ADDRESSED BYTE cache, never a
+ * trust cache. Nothing cached here is ever a trust/policy verdict: no
+ * `trusted`, `allow`, `deny`, `issuerTrusted` or `policyVerdict` field exists
+ * in any cached structure. Cache eviction or absence changes availability and
+ * performance only (D173), never trust semantics.
+ */
+
+/**
+ * D169/D170 — a DISCOVERY SNAPSHOT is one fully-consumed (D158) remote
+ * enumeration captured at a point in time: `M` is immutable, but
+ * `referrers(M)` is APPENDABLE (D155), so a snapshot is never a permanent
+ * fact about the Evidence Set. `capturedAt` is freshness metadata for
+ * availability decisions only — it is NEVER a trust input and NEVER a
+ * latest-wins selector (N5/D127 stay intact).
+ *
+ * Only `complete: true` enumerations may be stored as a snapshot (D171):
+ * a partial enumeration must never be cached as — or overwrite a
+ * previously-known-complete — snapshot.
+ */
+export interface RemoteEvidenceDiscoverySnapshot {
+  /** Canonical identity domain (D157/D167): (registry, repository, M). */
+  registry: string
+  repository: string
+  subjectManifestDigest: string
+  /** Which path produced the enumeration — re-observed on every online run. */
+  source: 'referrers-api' | 'tag-fallback'
+  /** Always true for a stored snapshot (D171). */
+  complete: true
+  /** The full referrer descriptor set, exactly as enumerated (untrusted metadata). */
+  descriptors: ReferrerDescriptor[]
+  /** Freshness metadata ONLY (D169): never used for selection/trust. */
+  capturedAt: string
+  /** Transport validators (diagnostic; not a trust input). */
+  validator?: {
+    etag?: string
+    lastModified?: string
+  }
+}
+
+/**
+ * D174 — cache mode. `online` keeps REMOTE enumeration authoritative (the
+ * snapshot cache never shadows newer referrers; CAS may only skip immutable
+ * object downloads). `offline` is EXPLICIT — an online failure must never
+ * silently degrade to a cached snapshot (D174); only an explicit `offline`
+ * call may reconstruct candidates from a complete snapshot + cached objects.
+ */
+export type EvidenceCacheMode = 'online' | 'offline'
+
+/**
+ * D170 — an offline cache GAP: a required immutable object is not fully
+ * present (missing or corrupt) in the CAS. Raised by the CAS-backed
+ * blob fetcher so the carrier's strict validation can distinguish an
+ * availability gap (fail loud, never partial) from a genuine
+ * INVALID_CARRIER rejection.
+ */
+export class OfflineCacheGapError extends Error {
+  constructor(
+    readonly reason: 'missing-object' | 'corrupt-object',
+    readonly what: string,
+  ) {
+    super(`offline cache gap (${reason}): ${what}`)
+    this.name = 'OfflineCacheGapError'
+  }
+}
+
+/** Offline reconstruction failure reasons (D170/D171 — fail loud, never partial). */
+export type OfflineCacheError =
+  | { kind: 'OFFLINE_CACHE_INCOMPLETE'; reason: 'no-snapshot' | 'missing-object' | 'corrupt-object'; message: string }
+  | { kind: 'REGISTRY_ERROR'; status: number; message: string }
+  | { kind: 'REFERENCE_ERROR'; message: string }
+
+/**
+ * Transport-level bookkeeping of one discovery run (C11: contains NO trust
+ * fields). `snapshotStored` is true only when a complete enumeration was
+ * captured (D171); `snapshotShadowedOnline` would never occur by design —
+ * online results always come from fresh remote enumeration.
+ */
+export interface EvidenceCacheStats {
+  mode: EvidenceCacheMode
+  objectCacheHits: number
+  objectCacheMisses: number
+  snapshotHit: boolean
+  snapshotStored: boolean
+  /** True when a corrupt CAS object was detected, deleted and re-fetched (D172, online only). */
+  corruptionRepaired: boolean
+}
+
+/**
+ * The result of remote Evidence discovery WITH cache participation (alpha.3).
+ * `complete: true` results are exactly the alpha.1 candidates — the cache
+ * never adds, drops or reorders candidates; `source` says where the
+ * enumeration came from (fresh remote vs explicit offline snapshot reuse).
+ */
+export type RemoteEvidenceDiscoveryResultCached =
+  | {
+      complete: true
+      candidates: RemoteEvidenceCandidate[]
+      rejected: RejectedRemoteEvidence[]
+      /** Where the enumeration was sourced (D169/D174). */
+      source: 'remote' | 'cached-snapshot'
+      cache: EvidenceCacheStats
+    }
+  | {
+      complete: false
+      error: RemoteEvidenceDiscoveryError | OfflineCacheError
+      cache: EvidenceCacheStats
+    }

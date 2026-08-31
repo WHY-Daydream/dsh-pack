@@ -18,6 +18,7 @@ import {
   EVIDENCE_DOCUMENT_LAYER_MEDIA_TYPE,
   EVIDENCE_ENVELOPE_LAYER_MEDIA_TYPE,
   type RemoteEvidenceDiscoveryError,
+  type RemoteSubjectDescriptor,
 } from './types.ts'
 
 /** The verified carrier payloads: an envelope, plus an optional document. */
@@ -43,6 +44,12 @@ interface OciEvidenceManifest {
 
 const OCI_IMAGE_MANIFEST_MEDIA_TYPE = 'application/vnd.oci.image.manifest.v1+json'
 const OCI_EMPTY_CONFIG_MEDIA_TYPE = 'application/vnd.oci.empty.v1+json'
+/** The standard OCI empty JSON descriptor (image-spec DescriptorEmptyJSON). */
+const OCI_EMPTY_DESCRIPTOR = {
+  mediaType: OCI_EMPTY_CONFIG_MEDIA_TYPE,
+  digest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+  size: 2,
+}
 
 function invalidCarrier(message: string): RemoteEvidenceDiscoveryError {
   return { kind: 'INVALID_CARRIER', message }
@@ -52,9 +59,10 @@ function invalidCarrier(message: string): RemoteEvidenceDiscoveryError {
  * D159 — the DSH document digest a verified Evidence statement REQUIRES
  * (sbomDigest / attestationDigest / capabilityDigest), if any. The presence of
  * this field in the verified statement governs whether the carrier MUST carry
- * exactly one external document.
+ * exactly one external document. Shared by the READ path (parse) and the
+ * WRITE path (build) so the two can never diverge.
  */
-function statementDocumentDigest(envelope: EvidenceEnvelope): string | undefined {
+export function statementDocumentDigest(envelope: EvidenceEnvelope): string | undefined {
   const statement = envelope.statement as Record<string, unknown> | null
   if (statement === null || typeof statement !== 'object') return undefined
   for (const key of ['sbomDigest', 'attestationDigest', 'capabilityDigest'] as const) {
@@ -195,4 +203,70 @@ export async function parseEvidenceCarrier(
     return { error: invalidCarrier('statement does not reference a document but the carrier carries one (ambiguous payload)') }
   }
   return { carrier: { envelopeBytes, envelope } }
+}
+
+// ============================================================================
+// alpha.2 — write-side (publication) twin of the strict read contract (D159)
+// ============================================================================
+
+/**
+ * Write-side validation: the envelope must be a VALID evidence envelope, and
+ * the external document presence must EXACTLY match the verified statement
+ * (required → exactly-one document whose bytes match the statement digest;
+ * not required → no document). Publication must never relax this — otherwise
+ * the write path diverges from the read path and N4/D120 would reopen.
+ */
+export function validateEvidenceForCarrier(
+  envelope: EvidenceEnvelope,
+  documentBytes?: Buffer,
+): { ok: true } | { ok: false; error: string } {
+  const verdict = verifyEvidenceEnvelope(envelope)
+  if (!verdict.ok) return { ok: false, error: verdict.error }
+  const required = statementDocumentDigest(envelope)
+  if (required !== undefined) {
+    if (documentBytes === undefined) return { ok: false, error: 'statement requires a document but none was provided (D159)' }
+    const actual = `sha256:${sha256Hex(documentBytes)}`
+    if (actual !== required) return { ok: false, error: `document digest mismatch: statement requires ${required}, actual ${actual}` }
+  } else if (documentBytes !== undefined) {
+    return { ok: false, error: 'statement does not reference a document but one was provided (ambiguous carrier, D159)' }
+  }
+  return { ok: true }
+}
+
+/** Input to build an OCI Evidence carrier manifest (D161 layout). */
+export interface EvidenceCarrierBuildInput {
+  /** D160 — the full subject descriptor; the subject manifest may not exist yet. */
+  subjectDescriptor: RemoteSubjectDescriptor
+  artifactType: string
+  envelopeBytes: Buffer
+  documentBytes?: Buffer
+}
+
+/** The built carrier manifest + its layer descriptors (for blob-first upload, D161). */
+export interface EvidenceCarrierBuildResult {
+  manifest: Buffer
+  layers: Array<{ mediaType: string; digest: string; size: number }>
+}
+
+/**
+ * Build the OCI Evidence carrier manifest: exactly one envelope layer, an
+ * optional document layer, empty config, and the full subject descriptor.
+ * Callers MUST run validateEvidenceForCarrier first (publication entry does).
+ */
+export function buildEvidenceCarrier(input: EvidenceCarrierBuildInput): EvidenceCarrierBuildResult {
+  const layers: Array<{ mediaType: string; digest: string; size: number }> = [
+    { mediaType: EVIDENCE_ENVELOPE_LAYER_MEDIA_TYPE, digest: `sha256:${sha256Hex(input.envelopeBytes)}`, size: input.envelopeBytes.length },
+  ]
+  if (input.documentBytes !== undefined) {
+    layers.push({ mediaType: EVIDENCE_DOCUMENT_LAYER_MEDIA_TYPE, digest: `sha256:${sha256Hex(input.documentBytes)}`, size: input.documentBytes.length })
+  }
+  const manifest = Buffer.from(JSON.stringify({
+    schemaVersion: 2,
+    mediaType: OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+    artifactType: input.artifactType,
+    subject: input.subjectDescriptor,
+    config: OCI_EMPTY_DESCRIPTOR,
+    layers,
+  }), 'utf8')
+  return { manifest, layers }
 }

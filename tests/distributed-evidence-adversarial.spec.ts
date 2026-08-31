@@ -729,6 +729,29 @@ describe('R5: fallback concurrent publication — lost updates and fake complete
     expect(gate.decision).toBe('DENY')
     expect(gate.verdict.errors.some((e) => e.includes('remote evidence discovery incomplete'))).toBe(true)
   })
+
+  it('a fallback referrers-tag index is pushed with the OCI image-index Content-Type (GHCR gate fix)', async () => {
+    const ctx = await setupRedTeamFallback()
+    const { publishRemoteEvidence } = await import('../src/evidence/remote/publication.ts')
+    await publishRemoteEvidence({
+      reference: ctx.reference,
+      subjectDescriptor: {
+        mediaType: 'application/vnd.oci.image.manifest.v1+json',
+        digest: ctx.subjectDigest,
+        size: ctx.mock.manifests.get(ctx.subjectDigest)?.bytes.length ?? 0,
+      },
+      envelopeBytes: plainEnvelope(ctx.keyFile, ctx.contentHash, 'build-provenance', 'ghcr-fix'),
+      artifactType: EVIDENCE_ARTIFACT_TYPES.provenance,
+    })
+    // the mock enforces GHCR-style Content-Type matching — the referrers-tag
+    // PUT must have carried the OCI IMAGE INDEX media type, otherwise the
+    // publish would have failed with 400 (as it did on real GHCR)
+    const indexPuts = ctx.mock.requests.filter((r) => r.method === 'PUT' && r.path.includes('sha256-'))
+    expect(indexPuts.length).toBeGreaterThanOrEqual(1)
+    for (const req of indexPuts) {
+      expect(req.contentType).toBe('application/vnd.oci.image.index.v1+json')
+    }
+  })
 })
 
 // ============================================================================

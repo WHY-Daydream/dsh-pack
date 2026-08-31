@@ -104,7 +104,8 @@ export class MockRegistry {
    */
   beforeManifestPut?: (ref: string, bytes: Buffer) => boolean
   /** Request log in arrival order (D161 blobs-before-manifest test). */
-  readonly requests: Array<{ method: string; path: string }> = []
+  /** Every request seen by the registry (method + path + optional Content-Type). */
+  readonly requests: Array<{ method: string; path: string; contentType?: string }> = []
   tamper: MockRegistryTamper
   /** beta.2 (D183) — the simulated registry profile (default 'native'). */
   readonly profile: MockRegistryProfile
@@ -159,7 +160,11 @@ export class MockRegistry {
   private async handle(req: IncomingMessage, res: ServerResponse, requireAuth: boolean): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const path = url.pathname
-    this.requests.push({ method: req.method ?? '', path })
+    this.requests.push({
+      method: req.method ?? '',
+      path,
+      ...(req.headers['content-type'] !== undefined ? { contentType: String(req.headers['content-type']).split(';')[0] } : {}),
+    })
 
     // rc.1 (D197/D198) — a redirecting registry: 302 to an ARBITRARY origin.
     // The client must not forward Authorization across origins, and the
@@ -332,6 +337,24 @@ export class MockRegistry {
       const bytes = await readBody(req)
       const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
       const entry: ManifestEntry = { bytes, digest }
+
+      // GHCR-realistic Content-Type enforcement (RI-28/gate fix validation):
+      // a manifest PUT whose Content-Type does not match the payload's
+      // declared mediaType is rejected 400 — real registries (Docker
+      // Registry/GHCR) enforce this, and a referrers-tag index MUST be pushed
+      // as an OCI image index (not with the manifest Content-Type).
+      let declaredMediaType: string | undefined
+      try {
+        declaredMediaType = (JSON.parse(bytes.toString('utf8')) as { mediaType?: unknown }).mediaType as string | undefined
+      } catch {
+        declaredMediaType = undefined
+      }
+      const contentType = (req.headers['content-type'] ?? '').split(';')[0]?.trim()
+      if (declaredMediaType !== undefined && contentType !== '' && contentType !== declaredMediaType) {
+        res.statusCode = 400
+        res.end('{"errors":[{"code":"MANIFEST_INVALID","message":"manifest mediaType does not match Content-Type"}]}')
+        return
+      }
 
       // D164 test hook: inject a competing fallback-tag write before the
       // conditional check (concurrent-update race, P10)

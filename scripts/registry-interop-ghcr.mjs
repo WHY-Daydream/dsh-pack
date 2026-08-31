@@ -153,7 +153,7 @@ async function main() {
       // D189 — full verification: OCI digest → subject == M → envelope → contentHash == C
       check('candidate subject == M', candidate?.subject.manifestDigest === mBefore)
       check('candidate contentHash == C', candidate?.subject.contentHash === contentHash)
-      check('candidate envelope verified (type provenance)', candidate?.evidenceType === 'provenance')
+      check('candidate envelope verified (type build-provenance)', candidate?.evidenceType === 'build-provenance')
     }
 
     // ---- I10 trust smoke: real GHCR evidence + CURRENT trust.yaml ----
@@ -184,7 +184,7 @@ async function main() {
     })
     check('trusted issuer → ALLOW', allow.decision === 'ALLOW', allow.verdict.errors.join('; '))
 
-    writeTrust([]) // revoke the evidence issuer
+    writeTrust(['sha256:' + '0'.repeat(64)]) // revoke the evidence issuer (a NON-matching key, so the DENY is UNTRUSTED_EVIDENCE_ISSUER, not "no issuer configured")
     const deny = await evaluateRemoteEvidenceTrust({
       reference: REMOTE_REF,
       actualContentHash: contentHash,

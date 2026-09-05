@@ -3,6 +3,20 @@
 本项目的版本历史。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.6.1] - 2026-09-05
+
+**Latest DSH compatibility fix** — 纯 patch release，无生产行为变更：
+
+- **修复 peerDependencies 对 DSH prerelease 版本的 npm semver 匹配**：`@deepseek-ai/dsh-app-boot` 由 `>=0.1.0-rc.5` 改为显式 0.1.x 窗口并集
+  `>=0.1.0-rc.5 <0.2.0-0 || >=0.1.1-0 <0.2.0-0 || >=0.1.2-0 <0.2.0-0 || >=0.1.3-0 <0.2.0-0`。原因：npm semver 的 prerelease 规则要求候选 prerelease 与 range 内某比较器共享
+  major.minor.patch 元组，原 range 会把 `0.1.1-rc.x`、`0.1.2-rc.1`、`0.1.3-alpha.1` 等更新代 DSH prerelease 挡在门外（npm install 报 ERESOLVE）；
+  单一 `<0.2.0-0` 上界窗口同样无法覆盖（缺每代同元组 prerelease 比较器），故对每条已发布 / 源码内的 0.1.x prerelease 行显式加一个 `>=X-0` union 成员
+- **新增 semver regression**：`tests/peer-range.spec.ts` 固定兼容契约——`0.1.0-rc.5/rc.6/rc.8`、`0.1.1-rc.1/rc.2`、`0.1.2-rc.1`、`0.1.2-alpha.5`、`0.1.3-alpha.1`、`0.1.0` 必须匹配，
+  `0.2.0-alpha.1` / `0.2.0` 必须拒绝；防止未来被"简化"回单 range 而重新踩坑
+- **真实安装矩阵 PASS**：npm 严格 peer 解析下 DSH `0.1.0-rc.6`、`0.1.1-rc.2`、`0.1.2-rc.1`（+ `@deepseek-ai/cordis` 4.0.2）均无 ERESOLVE（旧 range 与单窗口 range 均实证 ERESOLVE）；
+  最新 DSH 源码接口面（`loadProfile` / `loadOptionalPatches` / `composeEntries` / `PROFILE_PATCH_FILENAME` / `resolveDshHome` / `CommandInvocation` / `CommandResult` / `PatchOptions` / `Context`）核对无破坏性变更
+- **兼容策略**：0.1.x 为默认兼容窗口（新增 prerelease 行按本条目同款规则扩展 union 成员）；0.2.x 不自动放开——先跑 compatibility matrix 再手动扩大 peer range
+
 ## [0.6.0] - 2026-08-31
 
 **Distributed Verifiable Evidence** — OCI Referrers 分发 + 远程证据链（D149–D199 冻结）：
